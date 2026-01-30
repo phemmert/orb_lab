@@ -63,16 +63,10 @@ import sys
 import warnings
 warnings.filterwarnings('ignore')
 
-sys.path.insert(0, r'C:\Users\phemm\orb_lab\src')
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import confluence indicators
-try:
-    from confluence_indicators import ConfluenceCalculator, ConfluenceScores, pine_round
-except ImportError:
-    # Fallback if not in path
-    import os
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from confluence_indicators import ConfluenceCalculator, ConfluenceScores, pine_round
+from confluence_indicators import ConfluenceCalculator, ConfluenceScores, pine_round
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
