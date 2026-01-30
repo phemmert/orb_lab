@@ -370,34 +370,34 @@ class ORBBacktester:
         confluence_mode: str = 'all',  # 'all', 'ssl', 'wae', 'qqe', 'vol'
         
         # SSL Hybrid
-        ssl_baseline_length: int = 45,
-        ssl_length: int = 5,
+        ssl_baseline_length: Optional[int] = None,
+        ssl_length: Optional[int] = None,
         ssl_type: str = 'JMA',
         use_ssl_momentum: bool = True,
-        
+
         # WAE
-        wae_fast_ema: int = 20,
-        wae_slow_ema: int = 40,
-        wae_sensitivity: int = 190,
-        wae_bb_length: int = 20,
+        wae_fast_ema: Optional[int] = None,
+        wae_slow_ema: Optional[int] = None,
+        wae_sensitivity: Optional[int] = None,
+        wae_bb_length: Optional[int] = None,
         wae_bb_mult: float = 2.0,
         use_wae_acceleration: bool = True,
-        
+
         # QQE
-        qqe_rsi1_length: int = 6,
-        qqe_rsi1_smoothing: int = 5,
+        qqe_rsi1_length: Optional[int] = None,
+        qqe_rsi1_smoothing: Optional[int] = None,
         qqe_factor_primary: float = 3.0,
-        qqe_rsi2_length: int = 6,
-        qqe_rsi2_smoothing: int = 5,
+        qqe_rsi2_length: Optional[int] = None,
+        qqe_rsi2_smoothing: Optional[int] = None,
         qqe_factor_secondary: float = 1.61,
-        qqe_bb_length: int = 50,
+        qqe_bb_length: Optional[int] = None,
         qqe_bb_mult: float = 0.35,
         qqe_threshold: int = 3,
         qqe_consecutive_bars: int = 3,
         use_qqe_momentum: bool = True,
-        
+
         # Volume
-        vol_lookback: int = 5,
+        vol_lookback: Optional[int] = None,
         
         # ═══════════════════════════════════════════════════════════════════
         # EXIT PARAMETERS (the "dials" for Optuna)
@@ -416,9 +416,9 @@ class ORBBacktester:
         # ═══════════════════════════════════════════════════════════════════
         # VOLATILITY THRESHOLDS
         # ═══════════════════════════════════════════════════════════════════
-        low_vol_threshold: float = 0.8,
-        high_vol_threshold: float = 1.3,
-        extreme_vol_threshold: float = 2.0,
+        low_vol_threshold: Optional[float] = None,
+        high_vol_threshold: Optional[float] = None,
+        extreme_vol_threshold: Optional[float] = None,
         
         # ═══════════════════════════════════════════════════════════════════
         # TRADING WINDOW
@@ -459,40 +459,40 @@ class ORBBacktester:
         # Get symbol preset (or default)
         preset = SYMBOL_PRESETS.get(symbol, DEFAULT_PRESET)
         
-        # SSL params - use preset if param matches generic default
-        self.ssl_baseline_length = preset['ssl_baseline_length'] if ssl_baseline_length == 45 else ssl_baseline_length
-        self.ssl_length = preset['ssl_length'] if ssl_length == 5 else ssl_length
+        # SSL params - use preset unless explicitly overridden
+        self.ssl_baseline_length = ssl_baseline_length if ssl_baseline_length is not None else preset['ssl_baseline_length']
+        self.ssl_length = ssl_length if ssl_length is not None else preset['ssl_length']
         self.ssl_type = ssl_type
         self.use_ssl_momentum = use_ssl_momentum
-        
-        # WAE params - use preset if param matches generic default
-        self.wae_fast_ema = preset['wae_fast_ema'] if wae_fast_ema == 20 else wae_fast_ema
-        self.wae_slow_ema = preset['wae_slow_ema'] if wae_slow_ema == 40 else wae_slow_ema
-        self.wae_sensitivity = preset['wae_sensitivity'] if wae_sensitivity == 190 else wae_sensitivity
-        self.wae_bb_length = preset['wae_bb_length'] if wae_bb_length == 20 else wae_bb_length
+
+        # WAE params - use preset unless explicitly overridden
+        self.wae_fast_ema = wae_fast_ema if wae_fast_ema is not None else preset['wae_fast_ema']
+        self.wae_slow_ema = wae_slow_ema if wae_slow_ema is not None else preset['wae_slow_ema']
+        self.wae_sensitivity = wae_sensitivity if wae_sensitivity is not None else preset['wae_sensitivity']
+        self.wae_bb_length = wae_bb_length if wae_bb_length is not None else preset['wae_bb_length']
         self.wae_bb_mult = wae_bb_mult
         self.use_wae_acceleration = use_wae_acceleration
-        
-        # QQE params - use preset if param matches generic default
-        self.qqe_rsi1_length = preset['qqe_rsi1_length'] if qqe_rsi1_length == 6 else qqe_rsi1_length
-        self.qqe_rsi1_smoothing = preset['qqe_rsi1_smoothing'] if qqe_rsi1_smoothing == 5 else qqe_rsi1_smoothing
+
+        # QQE params - use preset unless explicitly overridden
+        self.qqe_rsi1_length = qqe_rsi1_length if qqe_rsi1_length is not None else preset['qqe_rsi1_length']
+        self.qqe_rsi1_smoothing = qqe_rsi1_smoothing if qqe_rsi1_smoothing is not None else preset['qqe_rsi1_smoothing']
         self.qqe_factor_primary = qqe_factor_primary
-        self.qqe_rsi2_length = preset['qqe_rsi2_length'] if qqe_rsi2_length == 6 else qqe_rsi2_length
-        self.qqe_rsi2_smoothing = preset['qqe_rsi2_smoothing'] if qqe_rsi2_smoothing == 5 else qqe_rsi2_smoothing
+        self.qqe_rsi2_length = qqe_rsi2_length if qqe_rsi2_length is not None else preset['qqe_rsi2_length']
+        self.qqe_rsi2_smoothing = qqe_rsi2_smoothing if qqe_rsi2_smoothing is not None else preset['qqe_rsi2_smoothing']
         self.qqe_factor_secondary = qqe_factor_secondary
-        self.qqe_bb_length = preset['qqe_bb_length'] if qqe_bb_length == 50 else qqe_bb_length
+        self.qqe_bb_length = qqe_bb_length if qqe_bb_length is not None else preset['qqe_bb_length']
         self.qqe_bb_mult = qqe_bb_mult
         self.qqe_threshold = qqe_threshold
         self.qqe_consecutive_bars = qqe_consecutive_bars
         self.use_qqe_momentum = use_qqe_momentum
-        
-        # Volume params - use preset if param matches generic default
-        self.vol_lookback = preset['vol_lookback'] if vol_lookback == 5 else vol_lookback
-        
-        # Vol thresholds - use preset
-        self.low_vol_threshold = preset['low_vol_threshold'] if low_vol_threshold == 0.8 else low_vol_threshold
-        self.high_vol_threshold = preset['high_vol_threshold'] if high_vol_threshold == 1.3 else high_vol_threshold
-        self.extreme_vol_threshold = preset['extreme_vol_threshold'] if extreme_vol_threshold == 2.0 else extreme_vol_threshold
+
+        # Volume params - use preset unless explicitly overridden
+        self.vol_lookback = vol_lookback if vol_lookback is not None else preset['vol_lookback']
+
+        # Vol thresholds - use preset unless explicitly overridden
+        self.low_vol_threshold = low_vol_threshold if low_vol_threshold is not None else preset['low_vol_threshold']
+        self.high_vol_threshold = high_vol_threshold if high_vol_threshold is not None else preset['high_vol_threshold']
+        self.extreme_vol_threshold = extreme_vol_threshold if extreme_vol_threshold is not None else preset['extreme_vol_threshold']
         
         # Exit params
         self.use_break_even = use_break_even
