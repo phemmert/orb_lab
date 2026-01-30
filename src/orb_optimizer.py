@@ -34,9 +34,12 @@ from typing import Dict, Any, Optional
 from collections import defaultdict
 import sys
 
-sys.path.insert(0, r'C:\Users\phemm\orb_lab\src')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from orb_backtester import ORBBacktester
+
+# Project root for default paths
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class ORBOptimizer:
@@ -60,9 +63,10 @@ class ORBOptimizer:
         
         # Search space control
         narrow_search: bool = True,  # Constrain around defaults
-        
-        # Output
-        results_dir: str = r'C:\Users\phemm\orb_lab\results',
+
+        # Output & Storage
+        results_dir: Optional[str] = None,
+        storage_path: Optional[str] = None,  # SQLite path for Optuna dashboard
         verbose: bool = True,
     ):
         self.symbol = symbol
@@ -74,10 +78,11 @@ class ORBOptimizer:
         self.objective_metric = objective_metric
         self.min_trades = min_trades
         self.narrow_search = narrow_search
-        self.results_dir = results_dir
+        self.results_dir = results_dir or os.path.join(PROJECT_ROOT, 'results')
+        self.storage_path = storage_path or os.path.join(PROJECT_ROOT, 'orb_optuna.db')
         self.verbose = verbose
-        
-        os.makedirs(results_dir, exist_ok=True)
+
+        os.makedirs(self.results_dir, exist_ok=True)
         
         self.best_params = None
         self.best_score = float('-inf')
@@ -250,12 +255,15 @@ class ORBOptimizer:
             print(f"  OPTIMIZATION IN PROGRESS...")
             print(f"{'─'*70}\n")
         
-        # Create study
+        # Create study with SQLite storage for dashboard visualization
         sampler = TPESampler(seed=42)
+        storage = f'sqlite:///{self.storage_path}'
         self.study = optuna.create_study(
             direction='maximize',
             sampler=sampler,
-            study_name=f'ORB_{self.symbol}_v2'
+            study_name=f'ORB_{self.symbol}_v2',
+            storage=storage,
+            load_if_exists=True
         )
         
         # Suppress Optuna logging unless verbose
@@ -375,7 +383,7 @@ class ORBOptimizer:
 
 class BatchOptimizer:
     """Run optimization across multiple symbols."""
-    
+
     def __init__(
         self,
         symbols: list = ['AMD', 'NVDA', 'TSLA', 'AAPL'],
@@ -386,7 +394,8 @@ class BatchOptimizer:
         n_trials: int = 100,
         objective_metric: str = 'robust',
         narrow_search: bool = True,
-        results_dir: str = r'C:\Users\phemm\orb_lab\results',
+        results_dir: Optional[str] = None,
+        storage_path: Optional[str] = None,
     ):
         self.symbols = symbols
         self.train_start = train_start
@@ -396,7 +405,8 @@ class BatchOptimizer:
         self.n_trials = n_trials
         self.objective_metric = objective_metric
         self.narrow_search = narrow_search
-        self.results_dir = results_dir
+        self.results_dir = results_dir or os.path.join(PROJECT_ROOT, 'results')
+        self.storage_path = storage_path or os.path.join(PROJECT_ROOT, 'orb_optuna.db')
         self.results = {}
     
     def run(self) -> Dict[str, Any]:
@@ -421,6 +431,7 @@ class BatchOptimizer:
                 objective_metric=self.objective_metric,
                 narrow_search=self.narrow_search,
                 results_dir=self.results_dir,
+                storage_path=self.storage_path,
                 verbose=True
             )
             
