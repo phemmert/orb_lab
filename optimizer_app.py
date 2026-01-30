@@ -41,9 +41,9 @@ with st.sidebar:
     # Objective metric
     objective_metric = st.selectbox(
         "Objective Metric",
-        options=['robust', 'total_r', 'profit_factor', 'sharpe', 'avg_r_per_trade'],
+        options=['robust', 'sortino', 'sharpe', 'total_r', 'profit_factor', 'avg_r_per_trade'],
         index=0,
-        help="'robust' penalizes overfitting and fragility"
+        help="'robust' penalizes overfitting; 'sortino' penalizes only downside volatility"
     )
 
     # Search mode

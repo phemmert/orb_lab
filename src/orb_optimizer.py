@@ -58,7 +58,7 @@ class ORBOptimizer:
         n_trials: int = 100,
         
         # Optimization target
-        objective_metric: str = 'robust',  # 'robust', 'total_r', 'profit_factor', 'sharpe'
+        objective_metric: str = 'robust',  # 'robust', 'total_r', 'profit_factor', 'sharpe', 'sortino'
         min_trades: int = 20,
         
         # Search space control
@@ -226,10 +226,28 @@ class ORBOptimizer:
         elif self.objective_metric == 'sharpe':
             if results['trades']:
                 r_values = [t['r_multiple'] for t in results['trades']]
-                std_r = np.std(r_values) if len(r_values) > 1 else 1.0
+                std_r = np.std(r_values, ddof=1) if len(r_values) > 1 else 1.0
                 score = results['avg_r_per_trade'] / std_r if std_r > 0 else 0
             else:
                 score = 0
+
+        elif self.objective_metric == 'sortino':
+            # Sortino = avg_R / downside_deviation
+            # Only penalizes negative R (downside volatility), not big winners
+            if results['trades']:
+                r_values = [t['r_multiple'] for t in results['trades']]
+                negative_r = [r for r in r_values if r < 0]
+                if len(negative_r) > 1:
+                    downside_dev = np.std(negative_r, ddof=1)
+                elif len(negative_r) == 1:
+                    downside_dev = abs(negative_r[0])
+                else:
+                    # No losing trades - perfect score
+                    downside_dev = 0.001  # Small value to avoid division by zero
+                score = results['avg_r_per_trade'] / downside_dev if downside_dev > 0 else 10.0
+            else:
+                score = 0
+
         else:
             score = results['total_r']
         
