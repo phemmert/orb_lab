@@ -11,10 +11,10 @@ v76 FIX (CRITICAL - January 27, 2026):
   Previous code HIDED gaps by using open at session start - WRONG.
 - Removed unnecessary ATR shift(1) - Pine uses current bar ATR for breakout.
 - STOP SELECTION TIE-BREAKER: When multiple stops achieve same R:R, Pine 
-  selects the FIRST in order (ATR→Swing→VWAP→Hybrid). Python was using max()
+  selects the FIRST in order (ATRâ†’Swingâ†’VWAPâ†’Hybrid). Python was using max()
   which returned the LAST. Now uses explicit first-match logic.
 - ATR_FAST_SMA FIX: Was set to raw atr_fast (no SMA). Pine uses ta.sma(orbATR_fast, 10).
-  This affects vol_state baseline seeding → wrong vol_state → wrong rr_desired → wrong stop selection.
+  This affects vol_state baseline seeding â†’ wrong vol_state â†’ wrong rr_desired â†’ wrong stop selection.
 
 v75 FIXES (CRITICAL - January 25, 2026):
 1. EXIT LOGIC ORDER: Stop hit checked FIRST with PREVIOUS bar's stop value,
@@ -63,20 +63,48 @@ import sys
 import warnings
 warnings.filterwarnings('ignore')
 
-import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, r'C:\Users\phemm\orb_lab\src')
 
-from confluence_indicators import ConfluenceCalculator, ConfluenceScores, pine_round
+# Import confluence indicators
+try:
+    from confluence_indicators import ConfluenceCalculator, ConfluenceScores, pine_round
+except ImportError:
+    # Fallback if not in path
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from confluence_indicators import ConfluenceCalculator, ConfluenceScores, pine_round
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # SYMBOL PRESETS - Matching Pine v69
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 SYMBOL_PRESETS = {
+    'AMD': {
+        # SSL
+        'ssl_baseline_length': 60,
+        'ssl_length': 10,
+        # WAE
+        'wae_fast_ema': 14,
+        'wae_slow_ema': 28,
+        'wae_bb_length': 20,
+        'wae_sensitivity': 325,
+        # QQE
+        'qqe_rsi1_length': 8,
+        'qqe_rsi1_smoothing': 5,
+        'qqe_rsi2_length': 4,
+        'qqe_rsi2_smoothing': 4,
+        'qqe_bb_length': 25,
+        # Volume
+        'vol_lookback': 12,
+        # Vol thresholds
+        'low_vol_threshold': 0.8,
+        'high_vol_threshold': 1.3,
+        'extreme_vol_threshold': 2.0,
+    },
     'GOOGL': {
         # SSL
-        'ssl_baseline_length': 20,
+        'ssl_baseline_length': 50,
         'ssl_length': 10,
         # WAE
         'wae_fast_ema': 17,
@@ -92,79 +120,6 @@ SYMBOL_PRESETS = {
         # Volume
         'vol_lookback': 12,
         # Vol thresholds
-        'low_vol_threshold': 0.8,
-        'high_vol_threshold': 1.3,
-        'extreme_vol_threshold': 2.0,
-    },
-    'PLTR': {
-        # SSL
-        'ssl_baseline_length': 20,
-        'ssl_length': 10,
-        # WAE
-        'wae_fast_ema': 14,
-        'wae_slow_ema': 29,
-        'wae_bb_length': 20,
-        'wae_sensitivity': 200,
-        # QQE
-        'qqe_rsi1_length': 8,
-        'qqe_rsi1_smoothing': 5,
-        'qqe_rsi2_length': 4,
-        'qqe_rsi2_smoothing': 4,
-        'qqe_bb_length': 25,
-        # Volume
-        'vol_lookback': 12,
-        # Vol thresholds
-        'low_vol_threshold': 0.8,
-        'high_vol_threshold': 1.3,
-        'extreme_vol_threshold': 2.0,
-    },
-    'NVDA': {
-        'ssl_baseline_length': 20,
-        'ssl_length': 10,
-        'wae_fast_ema': 17,
-        'wae_slow_ema': 35,
-        'wae_bb_length': 20,
-        'wae_sensitivity': 325,
-        'qqe_rsi1_length': 9,
-        'qqe_rsi1_smoothing': 5,
-        'qqe_rsi2_length': 4,
-        'qqe_rsi2_smoothing': 4,
-        'qqe_bb_length': 25,
-        'vol_lookback': 13,
-        'low_vol_threshold': 0.8,
-        'high_vol_threshold': 1.3,
-        'extreme_vol_threshold': 2.0,
-    },
-    'TSLA': {
-        'ssl_baseline_length': 30,
-        'ssl_length': 10,
-        'wae_fast_ema': 14,
-        'wae_slow_ema': 29,
-        'wae_bb_length': 20,
-        'wae_sensitivity': 275,
-        'qqe_rsi1_length': 8,
-        'qqe_rsi1_smoothing': 5,
-        'qqe_rsi2_length': 4,
-        'qqe_rsi2_smoothing': 4,
-        'qqe_bb_length': 25,
-        'vol_lookback': 12,
-        'low_vol_threshold': 0.8,
-        'high_vol_threshold': 1.3,
-        'extreme_vol_threshold': 2.0,
-    },
-    'AAPL': {
-        'ssl_baseline_length': 20,
-        'ssl_length': 10,
-        'wae_fast_ema': 22,
-        'wae_slow_ema': 44,
-        'wae_bb_length': 22,
-        'wae_sensitivity': 200,
-        'qqe_rsi1_length': 10,
-        'qqe_rsi1_smoothing': 6,
-        'qqe_rsi2_length': 5,
-        'qqe_rsi2_smoothing': 5,
-        'qqe_bb_length': 26,
-        'vol_lookback': 16,
         'low_vol_threshold': 0.8,
         'high_vol_threshold': 1.3,
         'extreme_vol_threshold': 2.0,
@@ -191,9 +146,9 @@ DEFAULT_PRESET = {
 }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # DATA CLASSES - Same as v4 tracer
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 @dataclass
 class ORBState:
@@ -322,9 +277,9 @@ class SkipRecord:
     vol_score: float = 0.0
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # MAIN BACKTESTER CLASS
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class ORBBacktester:
     """
@@ -339,9 +294,9 @@ class ORBBacktester:
         start_date: str = '2025-10-01',
         end_date: str = '2025-12-31',
         
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # ENTRY PARAMETERS
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         orb_minutes: int = 5,
         breakout_threshold_mult: float = 0.1,
         min_body_strength: float = 0.5,
@@ -356,46 +311,46 @@ class ORBBacktester:
         min_acceptable_rr: float = 1.5,
         profit_target_rr: float = 2.0,
         
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # CONFLUENCE PARAMETERS (NEW - v70)
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         enable_confluence: bool = True,
         min_confluence: int = 5,
         confluence_mode: str = 'all',  # 'all', 'ssl', 'wae', 'qqe', 'vol'
         
         # SSL Hybrid
-        ssl_baseline_length: Optional[int] = None,
-        ssl_length: Optional[int] = None,
+        ssl_baseline_length: int = 45,
+        ssl_length: int = 5,
         ssl_type: str = 'JMA',
         use_ssl_momentum: bool = True,
-
+        
         # WAE
-        wae_fast_ema: Optional[int] = None,
-        wae_slow_ema: Optional[int] = None,
-        wae_sensitivity: Optional[int] = None,
-        wae_bb_length: Optional[int] = None,
+        wae_fast_ema: int = 20,
+        wae_slow_ema: int = 40,
+        wae_sensitivity: int = 190,
+        wae_bb_length: int = 20,
         wae_bb_mult: float = 2.0,
         use_wae_acceleration: bool = True,
-
+        
         # QQE
-        qqe_rsi1_length: Optional[int] = None,
-        qqe_rsi1_smoothing: Optional[int] = None,
+        qqe_rsi1_length: int = 6,
+        qqe_rsi1_smoothing: int = 5,
         qqe_factor_primary: float = 3.0,
-        qqe_rsi2_length: Optional[int] = None,
-        qqe_rsi2_smoothing: Optional[int] = None,
+        qqe_rsi2_length: int = 6,
+        qqe_rsi2_smoothing: int = 5,
         qqe_factor_secondary: float = 1.61,
-        qqe_bb_length: Optional[int] = None,
+        qqe_bb_length: int = 50,
         qqe_bb_mult: float = 0.35,
         qqe_threshold: int = 3,
         qqe_consecutive_bars: int = 3,
         use_qqe_momentum: bool = True,
-
-        # Volume
-        vol_lookback: Optional[int] = None,
         
-        # ═══════════════════════════════════════════════════════════════════
+        # Volume
+        vol_lookback: int = 5,
+        
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # EXIT PARAMETERS (the "dials" for Optuna)
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         use_break_even: bool = True,
         break_even_rr: float = 0.5,
         use_trailing_stop: bool = True,
@@ -407,22 +362,24 @@ class ORBBacktester:
         ema_tighten_zone: float = 0.3,
         tightened_trail_distance: float = 0.3,
         
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # VOLATILITY THRESHOLDS
-        # ═══════════════════════════════════════════════════════════════════
-        low_vol_threshold: Optional[float] = None,
-        high_vol_threshold: Optional[float] = None,
-        extreme_vol_threshold: Optional[float] = None,
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        low_vol_threshold: float = 0.8,
+        high_vol_threshold: float = 1.3,
+        extreme_vol_threshold: float = 2.0,
+        skip_low_vol_c_grades: bool = True,
+        low_vol_min_rr: float = 2.0,
         
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # TRADING WINDOW
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         trading_start_minutes: int = 570,  # 9:30 = 9*60+30
         trading_end_minutes: int = 630,    # 10:30 = 10*60+30
         
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # OUTPUT CONTROL
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         verbose: bool = False,  # Set True for debugging
     ):
         # Store all parameters
@@ -453,40 +410,42 @@ class ORBBacktester:
         # Get symbol preset (or default)
         preset = SYMBOL_PRESETS.get(symbol, DEFAULT_PRESET)
         
-        # SSL params - use preset unless explicitly overridden
-        self.ssl_baseline_length = ssl_baseline_length if ssl_baseline_length is not None else preset['ssl_baseline_length']
-        self.ssl_length = ssl_length if ssl_length is not None else preset['ssl_length']
+        # SSL params - use preset if param matches generic default
+        self.ssl_baseline_length = preset['ssl_baseline_length'] if ssl_baseline_length == 45 else ssl_baseline_length
+        self.ssl_length = preset['ssl_length'] if ssl_length == 5 else ssl_length
         self.ssl_type = ssl_type
         self.use_ssl_momentum = use_ssl_momentum
-
-        # WAE params - use preset unless explicitly overridden
-        self.wae_fast_ema = wae_fast_ema if wae_fast_ema is not None else preset['wae_fast_ema']
-        self.wae_slow_ema = wae_slow_ema if wae_slow_ema is not None else preset['wae_slow_ema']
-        self.wae_sensitivity = wae_sensitivity if wae_sensitivity is not None else preset['wae_sensitivity']
-        self.wae_bb_length = wae_bb_length if wae_bb_length is not None else preset['wae_bb_length']
+        
+        # WAE params - use preset if param matches generic default
+        self.wae_fast_ema = preset['wae_fast_ema'] if wae_fast_ema == 20 else wae_fast_ema
+        self.wae_slow_ema = preset['wae_slow_ema'] if wae_slow_ema == 40 else wae_slow_ema
+        self.wae_sensitivity = preset['wae_sensitivity'] if wae_sensitivity == 190 else wae_sensitivity
+        self.wae_bb_length = preset['wae_bb_length'] if wae_bb_length == 20 else wae_bb_length
         self.wae_bb_mult = wae_bb_mult
         self.use_wae_acceleration = use_wae_acceleration
-
-        # QQE params - use preset unless explicitly overridden
-        self.qqe_rsi1_length = qqe_rsi1_length if qqe_rsi1_length is not None else preset['qqe_rsi1_length']
-        self.qqe_rsi1_smoothing = qqe_rsi1_smoothing if qqe_rsi1_smoothing is not None else preset['qqe_rsi1_smoothing']
+        
+        # QQE params - use preset if param matches generic default
+        self.qqe_rsi1_length = preset['qqe_rsi1_length'] if qqe_rsi1_length == 6 else qqe_rsi1_length
+        self.qqe_rsi1_smoothing = preset['qqe_rsi1_smoothing'] if qqe_rsi1_smoothing == 5 else qqe_rsi1_smoothing
         self.qqe_factor_primary = qqe_factor_primary
-        self.qqe_rsi2_length = qqe_rsi2_length if qqe_rsi2_length is not None else preset['qqe_rsi2_length']
-        self.qqe_rsi2_smoothing = qqe_rsi2_smoothing if qqe_rsi2_smoothing is not None else preset['qqe_rsi2_smoothing']
+        self.qqe_rsi2_length = preset['qqe_rsi2_length'] if qqe_rsi2_length == 6 else qqe_rsi2_length
+        self.qqe_rsi2_smoothing = preset['qqe_rsi2_smoothing'] if qqe_rsi2_smoothing == 5 else qqe_rsi2_smoothing
         self.qqe_factor_secondary = qqe_factor_secondary
-        self.qqe_bb_length = qqe_bb_length if qqe_bb_length is not None else preset['qqe_bb_length']
+        self.qqe_bb_length = preset['qqe_bb_length'] if qqe_bb_length == 50 else qqe_bb_length
         self.qqe_bb_mult = qqe_bb_mult
         self.qqe_threshold = qqe_threshold
         self.qqe_consecutive_bars = qqe_consecutive_bars
         self.use_qqe_momentum = use_qqe_momentum
-
-        # Volume params - use preset unless explicitly overridden
-        self.vol_lookback = vol_lookback if vol_lookback is not None else preset['vol_lookback']
-
-        # Vol thresholds - use preset unless explicitly overridden
-        self.low_vol_threshold = low_vol_threshold if low_vol_threshold is not None else preset['low_vol_threshold']
-        self.high_vol_threshold = high_vol_threshold if high_vol_threshold is not None else preset['high_vol_threshold']
-        self.extreme_vol_threshold = extreme_vol_threshold if extreme_vol_threshold is not None else preset['extreme_vol_threshold']
+        
+        # Volume params - use preset if param matches generic default
+        self.vol_lookback = preset['vol_lookback'] if vol_lookback == 5 else vol_lookback
+        
+        # Vol thresholds - use preset
+        self.low_vol_threshold = preset['low_vol_threshold'] if low_vol_threshold == 0.8 else low_vol_threshold
+        self.high_vol_threshold = preset['high_vol_threshold'] if high_vol_threshold == 1.3 else high_vol_threshold
+        self.extreme_vol_threshold = preset['extreme_vol_threshold'] if extreme_vol_threshold == 2.0 else extreme_vol_threshold
+        self.skip_low_vol_c_grades = skip_low_vol_c_grades
+        self.low_vol_min_rr = low_vol_min_rr
         
         # Exit params
         self.use_break_even = use_break_even
@@ -548,9 +507,9 @@ class ORBBacktester:
         self.df = None
         self.daily_atr_map = {}
         
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # DATA LOADING & INDICATOR CALCULATION
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def load_data(self):
         """Load data and calculate all indicators"""
@@ -560,7 +519,7 @@ class ORBBacktester:
         self.df = collector.fetch_bars(self.symbol, days_back=180, bar_size=1, extended_hours=True)
         
         if self.verbose:
-            print(f"✓ Loaded {len(self.df)} bars for {self.symbol}")
+            print(f"âœ“ Loaded {len(self.df)} bars for {self.symbol}")
         
         self._calc_indicators()
     
@@ -577,14 +536,14 @@ class ORBBacktester:
         # ETH ATR (fallback)
         df['atr_eth'] = df['tr'].ewm(alpha=1/self.atr_period, adjust=False).mean()
         
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # ALL-BAR ATR for vol_state (Pine: orbATR_fast = ta.atr(5) on ALL bars)
         # 
         # CRITICAL: Pine captures the RTH GAP at 09:30!
         # Even on extended hours charts, Pine's ta.atr() at 09:30 uses the
         # previous RTH close (not the premarket close) for TR calculation.
         # This captures overnight/weekend gaps that drive vol_state to EXTREME.
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         
         # Create TR column that captures RTH gaps at 09:30
         df['tr_with_gap'] = df['tr'].copy()
@@ -595,13 +554,14 @@ class ORBBacktester:
         df['last_rth_close'] = df['last_rth_close'].ffill()
         
         # At 09:30 bars, recalculate TR using previous RTH close
-        is_930 = (df.index.hour == 9) & (df.index.minute == 30)
-        for idx in df[is_930].index:
-            prev_rth_close = df.loc[idx, 'last_rth_close']
-            if pd.notna(prev_rth_close):
-                h, l = df.loc[idx, 'high'], df.loc[idx, 'low']
-                gap_tr = max(h - l, abs(h - prev_rth_close), abs(l - prev_rth_close))
-                df.loc[idx, 'tr_with_gap'] = gap_tr
+        # DISABLED FOR TESTING - gap injection may overcook TR at 09:30
+        # is_930 = (df.index.hour == 9) & (df.index.minute == 30)
+        # for idx in df[is_930].index:
+        #     prev_rth_close = df.loc[idx, 'last_rth_close']
+        #     if pd.notna(prev_rth_close):
+        #         h, l = df.loc[idx, 'high'], df.loc[idx, 'low']
+        #         gap_tr = max(h - l, abs(h - prev_rth_close), abs(l - prev_rth_close))
+        #         df.loc[idx, 'tr_with_gap'] = gap_tr
         
         # Now compute ATR(5) using gap-aware TR
         df['atr_fast_all'] = df['tr_with_gap'].ewm(alpha=1/5, adjust=False).mean()
@@ -618,12 +578,12 @@ class ORBBacktester:
         # RTH-only calculations
         rth_df = df[df['is_rth']].copy()
         
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # PINE PARITY: True Range for RTH bars
         # Pine's request.security(rthTicker, ...) only sees RTH bars.
         # At 09:30, "previous close" = last RTH bar's close (15:59 yesterday)
         # This CAPTURES overnight gaps in the TR calculation.
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         
         # shift(1) on RTH-only dataframe automatically gives us:
         # - For 09:31+: previous RTH bar's close (correct)
@@ -695,21 +655,21 @@ class ORBBacktester:
         # EMA
         df['ema9'] = df['close'].ewm(span=self.ema_period, adjust=False).mean()
         
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # CONFLUENCE INDICATORS (v70)
-        # ═══════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         if self.enable_confluence:
             if self.verbose:
                 print("  [*] Calculating confluence indicators (SSL, WAE, QQE, Volume)...")
             df = self.confluence_calc.compute_indicators(df)
             if self.verbose:
-                print("  [✓] Confluence indicators calculated")
+                print("  [âœ“] Confluence indicators calculated")
         
         self.df = df
     
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # HELPER FUNCTIONS
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def _is_orb_window(self, ts) -> bool:
         bar_minutes = ts.hour * 60 + ts.minute
@@ -736,9 +696,9 @@ class ORBBacktester:
         CRITICAL: At 09:30, Pine seeds baseline from the SMA BEFORE the gap spike.
         Python must use the PREVIOUS bar's SMA to match this behavior.
         """
-        # Use ALL-bar ATR values for vol_state (includes premarket context)
-        atr_fast = bar.get('atr_fast_all', bar.get('atr_fast_rth', bar['atr_rth']))
-        atr_fast_sma = bar.get('atr_fast_sma_all', atr_fast)
+        # Use RTH-only ATR values for vol_state (Pine runs on RTH chart)
+        atr_fast = bar.get('atr_fast_rth', bar.get('atr_rth', 1.0))
+        atr_fast_sma = bar.get('atr_fast_sma_rth', atr_fast)
         
         if pd.isna(atr_fast):
             atr_fast = bar.get('atr_rth', 1.0)
@@ -755,25 +715,9 @@ class ORBBacktester:
         # Seed/update baseline during ORB window
         if is_orb_vol_window:
             if pd.isna(self.vol.orb_session_baseline):
-                # CRITICAL FIX: At 09:30, use PREVIOUS bar's SMA (premarket value)
-                # Pine's baseline is seeded BEFORE the gap spike is included
-                if ts.hour == 9 and ts.minute == 30:
-                    try:
-                        # Look up previous bar's atr_fast_sma_all
-                        ts_idx = self.df.index.get_loc(ts)
-                        if ts_idx > 0:
-                            prev_bar = self.df.iloc[ts_idx - 1]
-                            seed_value = prev_bar.get('atr_fast_sma_all', atr_fast_sma)
-                            if pd.isna(seed_value):
-                                seed_value = prev_bar.get('atr_fast_all', atr_fast_sma)
-                            self.vol.orb_session_baseline = seed_value
-                        else:
-                            self.vol.orb_session_baseline = atr_fast_sma
-                    except Exception:
-                        self.vol.orb_session_baseline = atr_fast_sma
-                else:
-                    # Not 09:30, use current bar's SMA
-                    self.vol.orb_session_baseline = atr_fast_sma
+                # On RTH chart, Pine seeds baseline with current bar's orbATR_slow
+                # No previous-bar hack needed - RTH bars naturally include the gap
+                self.vol.orb_session_baseline = atr_fast_sma
             else:
                 # Pine: 0.9 * orbSessionBaseline + 0.1 * orbATR_slow
                 self.vol.orb_session_baseline = 0.9 * self.vol.orb_session_baseline + 0.1 * atr_fast_sma
@@ -794,6 +738,12 @@ class ORBBacktester:
         
         self.vol.htf_vf = daily_atr / daily_atr_slow if daily_atr_slow > 0 else 1.0
         self.vol.vol_factor = self.vol.session_vf * self.vol.htf_vf
+        
+        # Temporary deep VF debug
+        if self.verbose and ts.hour == 9 and 35 <= ts.minute <= 45:
+            daily_atr_val = bar.get('daily_atr', 0)
+            daily_atr_slow_val = bar.get('daily_atr_slow', 0)
+            print(f"    [VF DEBUG] {ts.strftime('%H:%M')} atr_fast={atr_fast:.4f} atr_fast_sma={atr_fast_sma:.4f} baseline={self.vol.orb_session_baseline:.4f} sessionVF={self.vol.session_vf:.4f} | daily_atr={daily_atr_val:.4f} daily_atr_slow={daily_atr_slow_val:.4f} htfVF={self.vol.htf_vf:.4f} | vf={self.vol.vol_factor:.4f} ({self.vol.vol_state})")
         
         if self.vol.vol_factor < self.low_vol_threshold:
             self.vol.vol_state = "LOW"
@@ -892,7 +842,7 @@ class ORBBacktester:
             return -1
         target_distance = risk * rr_desired
         target_atrs = target_distance / atr
-        if target_atrs > self.max_target_atr:
+        if target_atrs > self.max_target_atr + 1e-9:  # Epsilon tolerance for float boundary
             return (self.max_target_atr * atr) / risk
         return rr_desired
     
@@ -920,6 +870,14 @@ class ORBBacktester:
         
         # Find best R:R, then return FIRST candidate with that R:R (Pine tie-breaker)
         best_rr = max(c[2] for c in candidates)
+        
+        if self.verbose:
+            dir_str = "LONG" if is_long else "SHORT"
+            print(f"  [STOP EVAL] {dir_str} entry=${entry:.2f} ATR={atr:.4f} VWAP={stops.get('vwap_stop',0):.2f} valid={stops.get('vwap_valid','?')}")
+            for c in candidates:
+                winner = " <-- BEST" if c[2] == best_rr else ""
+                print(f"    {c[1]:6s}: stop=${c[0]:.2f}  RR={c[2]:.4f}{winner}")
+        
         for c in candidates:
             if c[2] == best_rr:
                 return c
@@ -932,9 +890,9 @@ class ORBBacktester:
     def _can_trigger(self) -> bool:
         return self.orb.bars_since_last_trigger >= self.orb.min_bars_between_triggers
     
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # EXIT LOGIC - v73 FIX: Intra-bar BE detection
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def _check_stop_hit(self, bar: pd.Series) -> bool:
         if not self._in_position():
@@ -1076,15 +1034,15 @@ class ORBBacktester:
         self.trades.append(trade)
         
         if self.verbose:
-            emoji = "✅" if pnl > 0 else "❌"
+            emoji = "âœ…" if pnl > 0 else "âŒ"
             conf_str = f" [C:{self.position.confluence_score}]" if self.enable_confluence else ""
-            print(f"  {emoji} {self.position.direction} {date_str} {self.position.entry_time}→{time_str}: ${pnl:+.2f} ({r_multiple:+.2f}R) - {exit_reason}{conf_str}")
+            print(f"  {emoji} {self.position.direction} {date_str} {self.position.entry_time}â†’{time_str}: ${pnl:+.2f} ({r_multiple:+.2f}R) - {exit_reason}{conf_str}")
         
         self.position.reset()
     
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # MAIN PROCESSING LOOP
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def _process_day(self, date_str: str):
         """Process a single trading day"""
@@ -1112,10 +1070,10 @@ class ORBBacktester:
             atr = bar['atr_rth']
             ema = bar['ema9']
             
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             # EXIT CHECKS - CORRECTED: Stop checked FIRST with PREVIOUS bar's value
             # Pine: strategy.exit() runs first with previous bar's stop, THEN BE/trailing update for next bar
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             
             if self._in_position():
                 # STEP 1: Check if stop was hit FIRST (using current_stop set on PREVIOUS bar)
@@ -1145,14 +1103,14 @@ class ORBBacktester:
                     if self.position.trailing_activated:
                         self._update_trailing_stop(bar, atr, ema)
             
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             # VOL STATE - Must run BEFORE ORB window continue!
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             self._calc_vol_state(bar, ts)
             
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             # ORB BUILDING
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             
             if self._is_orb_window(ts):
                 if ts.hour == 9 and ts.minute == 30:
@@ -1168,10 +1126,10 @@ class ORBBacktester:
             if not self.orb.orb_complete and not pd.isna(self.orb.session_high):
                 self.orb.orb_complete = True
             
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             # BREAKOUT DETECTION
             # Pine parity: breakout pending is SINGLE-BAR only
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             
             # Track if breakout detected THIS bar (for single-bar pending enforcement)
             pending_long_this_bar = False
@@ -1189,10 +1147,10 @@ class ORBBacktester:
                 pending_short_this_bar = True
                 self.orb.has_broken_out_low = True
             
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             # ENTRY EVALUATION (with confluence check - v70)
             # Pine parity: Can only enter on the ACTUAL breakout bar
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             
             if not self._in_position() and self._is_trading_window(ts) and self._can_trigger():
                 
@@ -1259,10 +1217,17 @@ class ORBBacktester:
                     elif self.vol.vol_state == "EXTREME":
                         rr_desired = max(rr_desired - 0.8, 1.0)
                     
+                    if self.verbose:
+                        print(f"  [VOL/RR] LONG vol_state={self.vol.vol_state} vf={self.vol.vol_factor:.4f} sessionVF={self.vol.session_vf:.4f} htfVF={self.vol.htf_vf:.4f} rr_desired={rr_desired:.2f} (base={self.profit_target_rr})")
                     stops = self._calc_stops(entry, atr, vwap, True, day_df, i)
                     stop_price, stop_type, achievable_rr = self._select_best_stop(stops, entry, atr, rr_desired, True)
                     
-                    if achievable_rr >= self.min_acceptable_rr - 0.0001:
+                    # LOW vol C-grade filter: require higher R:R in choppy conditions
+                    min_rr_for_entry = self.min_acceptable_rr
+                    if self.skip_low_vol_c_grades and self.vol.vol_state == "LOW":
+                        min_rr_for_entry = max(self.min_acceptable_rr, self.low_vol_min_rr)
+                    
+                    if achievable_rr >= min_rr_for_entry - 0.0001:
                         risk = abs(entry - stop_price)
                         self.position.direction = "LONG"
                         self.position.entry_price = entry
@@ -1285,12 +1250,13 @@ class ORBBacktester:
                         skip = SkipRecord(
                             date=date_str, time=time_str, direction="LONG",
                             entry_price=entry, stop_price=stop_price, stop_type=stop_type,
-                            achievable_rr=achievable_rr, min_rr=self.min_acceptable_rr,
-                            reason=f"RR {achievable_rr:.2f} < {self.min_acceptable_rr:.1f}"
+                            achievable_rr=achievable_rr, min_rr=min_rr_for_entry,
+                            reason=f"RR {achievable_rr:.2f} < {min_rr_for_entry:.1f}" + (" (LOW VOL C-GRADE)" if min_rr_for_entry > self.min_acceptable_rr else "")
 )
                         self.skips.append(skip)
                         if self.verbose:
-                            print(f"  [SKIP] LONG {date_str} {time_str} @ ${entry:.2f}: RR {achievable_rr:.2f} < {self.min_acceptable_rr:.2f} ({stop_type})")
+                            low_vol_tag = " [LOW VOL C-GRADE]" if min_rr_for_entry > self.min_acceptable_rr else ""
+                            print(f"  [SKIP] LONG {date_str} {time_str} @ ${entry:.2f}: RR {achievable_rr:.2f} < {min_rr_for_entry:.2f} ({stop_type}){low_vol_tag}")
                         self.orb.bars_since_last_trigger = 0  # v68 skip consumption
                         self.orb.long_breakout_pending = False  # Pine consumes pending on SKIP too!
                 
@@ -1357,10 +1323,17 @@ class ORBBacktester:
                     elif self.vol.vol_state == "EXTREME":
                         rr_desired = max(rr_desired - 0.8, 1.0)
                     
+                    if self.verbose:
+                        print(f"  [VOL/RR] SHORT vol_state={self.vol.vol_state} vf={self.vol.vol_factor:.4f} sessionVF={self.vol.session_vf:.4f} htfVF={self.vol.htf_vf:.4f} rr_desired={rr_desired:.2f} (base={self.profit_target_rr})")
                     stops = self._calc_stops(entry, atr, vwap, False, day_df, i)
                     stop_price, stop_type, achievable_rr = self._select_best_stop(stops, entry, atr, rr_desired, False)
                     
-                    if achievable_rr >= self.min_acceptable_rr - 0.0001:
+                    # LOW vol C-grade filter: require higher R:R in choppy conditions
+                    min_rr_for_entry = self.min_acceptable_rr
+                    if self.skip_low_vol_c_grades and self.vol.vol_state == "LOW":
+                        min_rr_for_entry = max(self.min_acceptable_rr, self.low_vol_min_rr)
+                    
+                    if achievable_rr >= min_rr_for_entry - 0.0001:
                         risk = abs(entry - stop_price)
                         self.position.direction = "SHORT"
                         self.position.entry_price = entry
@@ -1383,18 +1356,19 @@ class ORBBacktester:
                         skip = SkipRecord(
                             date=date_str, time=time_str, direction="SHORT",
                             entry_price=entry, stop_price=stop_price, stop_type=stop_type,
-                            achievable_rr=achievable_rr, min_rr=self.min_acceptable_rr,
-                            reason=f"RR {achievable_rr:.2f} < {self.min_acceptable_rr:.1f}"
+                            achievable_rr=achievable_rr, min_rr=min_rr_for_entry,
+                            reason=f"RR {achievable_rr:.2f} < {min_rr_for_entry:.1f}" + (" (LOW VOL C-GRADE)" if min_rr_for_entry > self.min_acceptable_rr else "")
                         )
                         self.skips.append(skip)
                         if self.verbose:
-                            print(f"  [SKIP] SHORT {date_str} {time_str} @ ${entry:.2f}: RR {achievable_rr:.2f} < {self.min_acceptable_rr:.2f} ({stop_type})")
+                            low_vol_tag = " [LOW VOL C-GRADE]" if min_rr_for_entry > self.min_acceptable_rr else ""
+                            print(f"  [SKIP] SHORT {date_str} {time_str} @ ${entry:.2f}: RR {achievable_rr:.2f} < {min_rr_for_entry:.2f} ({stop_type}){low_vol_tag}")
                         self.orb.bars_since_last_trigger = 0
                         self.orb.short_breakout_pending = False  # Pine consumes pending on SKIP too!
             
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             # STATE MACHINE UPDATES
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             
             if self.orb.orb_complete and not self._in_position():
                 # Pine: clear pending AND breakout flag when price returns inside ORB
@@ -1408,11 +1382,11 @@ class ORBBacktester:
                     self.orb.short_breakout_pending = False
                     self.orb.has_broken_out_low = False
             
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             # PINE PARITY: Pending signals are SINGLE-BAR only
             # A breakout must be acted upon on the breakout bar itself.
             # If not consumed this bar, clear pending for next bar.
-            # ═══════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             if not pending_long_this_bar:
                 self.orb.long_breakout_pending = False
             if not pending_short_this_bar:
@@ -1423,9 +1397,9 @@ class ORBBacktester:
             last_bar = day_df[day_df.index.map(self._is_rth)].iloc[-1]
             self._close_position(last_bar['close'], "END OF DAY", "16:00", date_str)
     
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # MAIN RUN METHOD
-    # ═══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def run(self) -> Dict[str, Any]:
         """
@@ -1604,9 +1578,9 @@ class ORBBacktester:
             print(f"\nTotal: {len(results['skips'])} skipped")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # COMMAND LINE INTERFACE
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 if __name__ == '__main__':
     # Example usage
