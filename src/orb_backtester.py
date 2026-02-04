@@ -353,6 +353,7 @@ class ORBBacktester:
         # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         use_break_even: bool = True,
         break_even_rr: float = 0.5,
+        use_adaptive_be: bool = True,
         use_trailing_stop: bool = True,
         trailing_stop_distance: float = 1.2,
         use_ema_exit: bool = True,
@@ -450,6 +451,7 @@ class ORBBacktester:
         # Exit params
         self.use_break_even = use_break_even
         self.break_even_rr = break_even_rr
+        self.use_adaptive_be = use_adaptive_be
         self.use_trailing_stop = use_trailing_stop
         self.trailing_stop_distance = trailing_stop_distance
         self.use_ema_exit = use_ema_exit
@@ -914,8 +916,18 @@ class ORBBacktester:
         """
         if not self._in_position() or not self.use_break_even or self.position.stop_moved_to_be:
             return False
-        
-        be_target_distance = self.position.risk * self.break_even_rr
+
+        # Volatility-adaptive BE threshold (matches Pine useAdaptiveBE)
+        be_rr = self.break_even_rr
+        if self.use_adaptive_be:
+            if self.position.vol_state == "LOW":
+                be_rr = self.break_even_rr + 0.2      # Harder to trigger in low vol
+            elif self.position.vol_state == "HIGH":
+                be_rr = self.break_even_rr - 0.1     # Easier in high vol
+            elif self.position.vol_state == "EXTREME":
+                be_rr = self.break_even_rr - 0.2     # Easiest in extreme vol
+
+        be_target_distance = self.position.risk * be_rr
         
         if self.position.direction == "LONG":
             # For longs, check if CLOSE reached BE target
