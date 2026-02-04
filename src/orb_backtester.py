@@ -353,7 +353,7 @@ class ORBBacktester:
         # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         use_break_even: bool = True,
         break_even_rr: float = 0.5,
-        use_adaptive_be: bool = True,
+        use_adaptive_be: bool = False,
         use_trailing_stop: bool = True,
         trailing_stop_distance: float = 1.2,
         use_ema_exit: bool = True,
