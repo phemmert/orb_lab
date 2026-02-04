@@ -87,7 +87,79 @@ class ORBOptimizer:
         self.best_params = None
         self.best_score = float('-inf')
         self.study = None
-        
+
+    def _calc_score(self, results: Dict[str, Any]) -> float:
+        """Calculate score from backtest results based on objective metric."""
+
+        if results['total_trades'] < self.min_trades:
+            return float('-inf')
+
+        if self.objective_metric == 'robust':
+            if not results['trades']:
+                return float('-inf')
+
+            # Group trades by month
+            monthly_r = defaultdict(float)
+            for t in results['trades']:
+                month_key = t['date'][:7]  # "2025-04"
+                monthly_r[month_key] += t['r_multiple']
+
+            monthly_values = list(monthly_r.values())
+
+            if len(monthly_values) < 2:
+                return float('-inf')
+
+            median_monthly = np.median(monthly_values)
+            stdev_monthly = np.std(monthly_values)
+            max_dd = results['max_drawdown_r']
+
+            # Robust score
+            score = median_monthly - (0.5 * max_dd) - (0.2 * stdev_monthly)
+
+            # Penalty for negative months
+            neg_months = sum(1 for m in monthly_values if m < 0)
+            score -= 0.5 * neg_months
+
+            # Penalty for fragility
+            if results['win_rate'] < 30:
+                score -= 1.0
+
+        elif self.objective_metric == 'total_r':
+            score = results['total_r']
+
+        elif self.objective_metric == 'profit_factor':
+            score = results['profit_factor'] if results['profit_factor'] != float('inf') else 10.0
+
+        elif self.objective_metric == 'avg_r_per_trade':
+            score = results['avg_r_per_trade']
+
+        elif self.objective_metric == 'sharpe':
+            if results['trades']:
+                r_values = [t['r_multiple'] for t in results['trades']]
+                std_r = np.std(r_values, ddof=1) if len(r_values) > 1 else 1.0
+                score = results['avg_r_per_trade'] / std_r if std_r > 0 else 0
+            else:
+                score = 0
+
+        elif self.objective_metric == 'sortino':
+            if results['trades']:
+                r_values = [t['r_multiple'] for t in results['trades']]
+                negative_r = [r for r in r_values if r < 0]
+                if len(negative_r) > 1:
+                    downside_dev = np.std(negative_r, ddof=1)
+                elif len(negative_r) == 1:
+                    downside_dev = abs(negative_r[0])
+                else:
+                    downside_dev = 0.001
+                score = results['avg_r_per_trade'] / downside_dev if downside_dev > 0 else 10.0
+            else:
+                score = 0
+
+        else:
+            score = results['total_r']
+
+        return score
+
     def _objective(self, trial: optuna.Trial) -> float:
         """Optuna objective function."""
         
@@ -154,108 +226,66 @@ class ORBOptimizer:
             }
         
         # ═══════════════════════════════════════════════════════════════════
-        # RUN BACKTEST
+        # RUN TRAINING BACKTEST
         # ═══════════════════════════════════════════════════════════════════
-        
+
         try:
-            bt = ORBBacktester(
+            bt_train = ORBBacktester(
                 symbol=self.symbol,
                 start_date=self.train_start,
                 end_date=self.train_end,
                 verbose=False,
                 **params
             )
-            results = bt.run()
+            train_results = bt_train.run()
         except Exception as e:
             if self.verbose:
-                print(f"  Trial {trial.number} failed: {e}")
+                print(f"  Trial {trial.number} train failed: {e}")
             return float('-inf')
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # CALCULATE SCORE
-        # ═══════════════════════════════════════════════════════════════════
-        
-        if results['total_trades'] < self.min_trades:
+
+        train_score = self._calc_score(train_results)
+        if train_score == float('-inf'):
             return float('-inf')
-        
-        if self.objective_metric == 'robust':
-            # ═══════════════════════════════════════════════════════════════
-            # ROBUST SCORING - Surgeon's formula
-            # score = median_monthly_R - 0.5*max_DD - 0.2*stdev_monthly
-            # ═══════════════════════════════════════════════════════════════
-            
-            if not results['trades']:
-                return float('-inf')
-            
-            # Group trades by month
-            monthly_r = defaultdict(float)
-            for t in results['trades']:
-                month_key = t['date'][:7]  # "2025-04"
-                monthly_r[month_key] += t['r_multiple']
-            
-            monthly_values = list(monthly_r.values())
-            
-            if len(monthly_values) < 2:
-                return float('-inf')
-            
-            median_monthly = np.median(monthly_values)
-            stdev_monthly = np.std(monthly_values)
-            max_dd = results['max_drawdown_r']
-            
-            # Robust score
-            score = median_monthly - (0.5 * max_dd) - (0.2 * stdev_monthly)
-            
-            # Penalty for negative months (Surgeon's addition)
-            # Systems that lose 4/6 months but win big in 2 blow up live
-            neg_months = sum(1 for m in monthly_values if m < 0)
-            score -= 0.5 * neg_months
-            
-            # Penalty for fragility
-            if results['win_rate'] < 30:
-                score -= 1.0
-                
-        elif self.objective_metric == 'total_r':
-            score = results['total_r']
-            
-        elif self.objective_metric == 'profit_factor':
-            score = results['profit_factor'] if results['profit_factor'] != float('inf') else 10.0
-            
-        elif self.objective_metric == 'avg_r_per_trade':
-            score = results['avg_r_per_trade']
-            
-        elif self.objective_metric == 'sharpe':
-            if results['trades']:
-                r_values = [t['r_multiple'] for t in results['trades']]
-                std_r = np.std(r_values, ddof=1) if len(r_values) > 1 else 1.0
-                score = results['avg_r_per_trade'] / std_r if std_r > 0 else 0
-            else:
-                score = 0
 
-        elif self.objective_metric == 'sortino':
-            # Sortino = avg_R / downside_deviation
-            # Only penalizes negative R (downside volatility), not big winners
-            if results['trades']:
-                r_values = [t['r_multiple'] for t in results['trades']]
-                negative_r = [r for r in r_values if r < 0]
-                if len(negative_r) > 1:
-                    downside_dev = np.std(negative_r, ddof=1)
-                elif len(negative_r) == 1:
-                    downside_dev = abs(negative_r[0])
-                else:
-                    # No losing trades - perfect score
-                    downside_dev = 0.001  # Small value to avoid division by zero
-                score = results['avg_r_per_trade'] / downside_dev if downside_dev > 0 else 10.0
-            else:
-                score = 0
+        # ═══════════════════════════════════════════════════════════════════
+        # RUN TEST BACKTEST (for generalization check)
+        # ═══════════════════════════════════════════════════════════════════
 
-        else:
-            score = results['total_r']
-        
-        if score > self.best_score:
-            self.best_score = score
+        try:
+            bt_test = ORBBacktester(
+                symbol=self.symbol,
+                start_date=self.test_start,
+                end_date=self.test_end,
+                verbose=False,
+                **params
+            )
+            test_results = bt_test.run()
+        except Exception as e:
+            if self.verbose:
+                print(f"  Trial {trial.number} test failed: {e}")
+            return float('-inf')
+
+        # Prune if test period has too few trades
+        if test_results['total_trades'] < self.min_trades:
+            return float('-inf')
+
+        test_score = self._calc_score(test_results)
+        if test_score == float('-inf'):
+            return float('-inf')
+
+        # ═══════════════════════════════════════════════════════════════════
+        # 40/60 TRAIN/TEST BLEND - Favors generalization over overfitting
+        # A param set scoring 8.0 train / 1.0 test (blend: 3.8) loses to
+        # one scoring 5.0 train / 5.0 test (blend: 5.0)
+        # ═══════════════════════════════════════════════════════════════════
+
+        blended_score = 0.4 * train_score + 0.6 * test_score
+
+        if blended_score > self.best_score:
+            self.best_score = blended_score
             self.best_params = params.copy()
-        
-        return score
+
+        return blended_score
     
     def run(self) -> Dict[str, Any]:
         """Run optimization and validation."""
