@@ -104,13 +104,13 @@ SYMBOL_PRESETS = {
     },
     'GOOGL': {
         # SSL
-        'ssl_baseline_length': 50,
+        'ssl_baseline_length': 60,
         'ssl_length': 10,
         # WAE
         'wae_fast_ema': 17,
         'wae_slow_ema': 35,
         'wae_bb_length': 20,
-        'wae_sensitivity': 325,
+        'wae_sensitivity': 200,
         # QQE
         'qqe_rsi1_length': 9,
         'qqe_rsi1_smoothing': 5,
