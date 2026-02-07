@@ -1,0 +1,50 @@
+{
+  "symbol": "AMD",
+  "optimization_date": "2026-01-01T15:40:55.613523",
+  "train_period": {
+    "start": "2025-04-01",
+    "end": "2025-09-30"
+  },
+  "test_period": {
+    "start": "2025-10-01",
+    "end": "2025-12-31"
+  },
+  "n_trials": 100,
+  "objective_metric": "total_r",
+  "best_params": {
+    "break_even_rr": 0.7,
+    "profit_target_rr": 2.75,
+    "trailing_stop_distance": 1.0,
+    "ema_tighten_zone": 0.4,
+    "tightened_trail_distance": 0.5,
+    "ema_confirmation_bars": 2,
+    "atr_stop_mult": 1.75,
+    "min_stop_atr": 0.1,
+    "swing_lookback": 3,
+    "min_acceptable_rr": 1.25,
+    "low_vol_threshold": 0.8,
+    "high_vol_threshold": 1.3,
+    "extreme_vol_threshold": 2.3,
+    "trading_end_minutes": 645,
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "use_ema_exit": false,
+    "use_aggressive_trailing": false
+  },
+  "train_results": {
+    "total_trades": 76,
+    "win_rate": 26.31578947368421,
+    "total_r": 42.79199169222791,
+    "avg_r_per_trade": 0.5630525222661568,
+    "profit_factor": 2.7837164343409486,
+    "max_drawdown_r": 7.36721413027956
+  },
+  "test_results": {
+    "total_trades": 106,
+    "win_rate": 15.09433962264151,
+    "total_r": -4.136278163713393,
+    "avg_r_per_trade": -0.03902149211050371,
+    "profit_factor": 1.0214100286038568,
+    "max_drawdown_r": 16.275982618279002
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "symbol": "AMD",
+  "optimization_date": "2026-01-30T00:21:58.519175",
+  "optimizer_version": "v2_robust",
+  "objective_metric": "robust",
+  "narrow_search": true,
+  "train_period": {
+    "start": "2025-04-01",
+    "end": "2025-09-30"
+  },
+  "test_period": {
+    "start": "2025-10-01",
+    "end": "2025-12-31"
+  },
+  "n_trials": 10,
+  "best_score": -Infinity,
+  "best_params": {
+    "break_even_rr": 0.5,
+    "profit_target_rr": 2.5,
+    "trailing_stop_distance": 1.4,
+    "ema_tighten_zone": 0.35,
+    "tightened_trail_distance": 0.25,
+    "ema_confirmation_bars": 1,
+    "atr_stop_mult": 1.75,
+    "min_stop_atr": 0.2,
+    "swing_lookback": 5,
+    "min_acceptable_rr": 1.75,
+    "low_vol_threshold": 0.7,
+    "high_vol_threshold": 1.4,
+    "extreme_vol_threshold": 2.2,
+    "trading_end_minutes": 615,
+    "use_ema_exit": false,
+    "use_aggressive_trailing": false,
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "trading_start_minutes": 570
+  },
+  "train_results": {
+    "total_trades": 1,
+    "win_rate": 100.0,
+    "total_r": 2.1824974817804432,
+    "avg_r_per_trade": 2.1824974817804432,
+    "profit_factor": Infinity,
+    "max_drawdown_r": 0
+  },
+  "test_results": {
+    "total_trades": 2,
+    "win_rate": 0,
+    "total_r": 0.0,
+    "avg_r_per_trade": 0.0,
+    "profit_factor": Infinity,
+    "max_drawdown_r": 0
+  }
+}

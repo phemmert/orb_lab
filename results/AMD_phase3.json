@@ -1,0 +1,24 @@
+{
+  "symbol": "AMD",
+  "phase": 3,
+  "phase_name": "Confluence Gating",
+  "optimization_date": "2026-02-06T00:26:48.896634",
+  "optimizer_version": "v3_phased",
+  "objective": "robust_pf",
+  "train_period": {
+    "start": "2025-08-29",
+    "end": "2025-11-15"
+  },
+  "test_period": {
+    "start": "2025-11-16",
+    "end": "2026-01-27"
+  },
+  "n_trials": 200,
+  "best_score": 1.279757764735823,
+  "best_params": {
+    "min_confluence": 3
+  },
+  "fixed_params": {},
+  "train_results": {},
+  "test_results": {}
+}

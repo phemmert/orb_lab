@@ -1,0 +1,54 @@
+{
+  "symbol": "NVDA",
+  "optimization_date": "2026-01-01T19:13:08.291797",
+  "optimizer_version": "v2_robust",
+  "objective_metric": "robust",
+  "narrow_search": true,
+  "train_period": {
+    "start": "2025-04-01",
+    "end": "2025-09-30"
+  },
+  "test_period": {
+    "start": "2025-10-01",
+    "end": "2025-12-31"
+  },
+  "n_trials": 100,
+  "best_score": 2.4848631129230094,
+  "best_params": {
+    "break_even_rr": 0.6000000000000001,
+    "profit_target_rr": 1.75,
+    "trailing_stop_distance": 1.4,
+    "ema_tighten_zone": 0.35,
+    "tightened_trail_distance": 0.3,
+    "ema_confirmation_bars": 1,
+    "atr_stop_mult": 2.25,
+    "min_stop_atr": 0.1,
+    "swing_lookback": 4,
+    "min_acceptable_rr": 1.25,
+    "low_vol_threshold": 0.7999999999999999,
+    "high_vol_threshold": 1.2,
+    "extreme_vol_threshold": 2.1,
+    "trading_end_minutes": 630,
+    "use_ema_exit": false,
+    "use_aggressive_trailing": false,
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "trading_start_minutes": 570
+  },
+  "train_results": {
+    "total_trades": 78,
+    "win_rate": 26.923076923076923,
+    "total_r": 15.394025367790139,
+    "avg_r_per_trade": 0.19735929958705306,
+    "profit_factor": 1.363082054055167,
+    "max_drawdown_r": 4.0
+  },
+  "test_results": {
+    "total_trades": 94,
+    "win_rate": 18.085106382978726,
+    "total_r": -10.102870873949666,
+    "avg_r_per_trade": -0.10747734972286878,
+    "profit_factor": 0.6599396541162565,
+    "max_drawdown_r": 12.0
+  }
+}

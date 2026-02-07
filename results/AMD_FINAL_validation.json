@@ -1,0 +1,61 @@
+{
+  "symbol": "AMD",
+  "validation_date": "2026-02-06T15:19:31.736333",
+  "all_params": {
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "use_ssl_momentum": true,
+    "use_wae_acceleration": true,
+    "use_qqe_momentum": true,
+    "trading_start_minutes": 570,
+    "break_even_rr": 0.6000000000000001,
+    "profit_target_rr": 3.0,
+    "trailing_stop_distance": 1.0,
+    "ema_tighten_zone": 0.35000000000000003,
+    "tightened_trail_distance": 0.5,
+    "ema_confirmation_bars": 2,
+    "atr_stop_mult": 2.75,
+    "min_stop_atr": 0.1,
+    "swing_lookback": 4,
+    "min_acceptable_rr": 1.0,
+    "ema_period": 10,
+    "vwap_stop_distance": 0.25,
+    "max_target_atr": 4.0,
+    "breakout_threshold_mult": 0.07500000000000001,
+    "min_body_strength": 0.7,
+    "trading_end_minutes": 615,
+    "low_vol_threshold": 0.8,
+    "high_vol_threshold": 1.1,
+    "extreme_vol_threshold": 1.8,
+    "skip_low_vol_c_grades": false,
+    "low_vol_min_rr": 2.5,
+    "min_confluence": 3,
+    "use_adaptive_be": false,
+    "use_ema_exit": false,
+    "use_aggressive_trailing": false
+  },
+  "train_period": {
+    "start": "2025-08-29",
+    "end": "2025-11-15"
+  },
+  "test_period": {
+    "start": "2025-11-16",
+    "end": "2026-01-27"
+  },
+  "train_results": {
+    "total_trades": 39,
+    "win_rate": 44.0,
+    "total_r": 17.811517499638022,
+    "avg_r_per_trade": 0.45670557691379543,
+    "profit_factor": 2.161763825002515,
+    "max_drawdown_r": 4.0
+  },
+  "test_results": {
+    "total_trades": 34,
+    "win_rate": 41.17647058823529,
+    "total_r": 13.529645128744487,
+    "avg_r_per_trade": 0.39793073908072024,
+    "profit_factor": 2.3282033445173336,
+    "max_drawdown_r": 3.0205683889644073
+  }
+}

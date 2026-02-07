@@ -82,13 +82,13 @@ except ImportError:
 SYMBOL_PRESETS = {
     'AMD': {
         # SSL
-        'ssl_baseline_length': 60,
+        'ssl_baseline_length': 40,
         'ssl_length': 10,
         # WAE
-        'wae_fast_ema': 14,
-        'wae_slow_ema': 28,
+        'wae_fast_ema': 13,
+        'wae_slow_ema': 26,
         'wae_bb_length': 20,
-        'wae_sensitivity': 325,
+        'wae_sensitivity': 200,
         # QQE
         'qqe_rsi1_length': 8,
         'qqe_rsi1_smoothing': 5,
@@ -104,15 +104,15 @@ SYMBOL_PRESETS = {
     },
     'GOOGL': {
         # SSL
-        'ssl_baseline_length': 60,
+        'ssl_baseline_length': 50,
         'ssl_length': 10,
         # WAE
-        'wae_fast_ema': 17,
-        'wae_slow_ema': 35,
+        'wae_fast_ema': 15,
+        'wae_slow_ema': 30,
         'wae_bb_length': 20,
-        'wae_sensitivity': 200,
+        'wae_sensitivity': 325,
         # QQE
-        'qqe_rsi1_length': 9,
+        'qqe_rsi1_length': 8,
         'qqe_rsi1_smoothing': 5,
         'qqe_rsi2_length': 4,
         'qqe_rsi2_smoothing': 4,

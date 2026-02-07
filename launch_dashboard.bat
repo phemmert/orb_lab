@@ -6,5 +6,5 @@ echo.
 echo Dashboard will open at: http://127.0.0.1:8080
 echo Press Ctrl+C to stop
 echo.
-optuna-dashboard sqlite:///orb_optuna.db
+optuna-dashboard sqlite:///C:/Users/phemm/orb_lab/orb_optuna_v3.db
 pause
