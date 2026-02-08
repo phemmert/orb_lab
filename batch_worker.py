@@ -5,7 +5,8 @@ Standalone process that runs all 4 optimizer phases for a single symbol.
 Writes status updates to a JSON file that Streamlit polls.
 
 Usage:
-    python batch_worker.py --symbol AMD --trials 200 \
+    python batch_worker.py --symbol AMD --trials-p1 200 --trials-p2 150 \
+        --trials-p3 75 --trials-p4 50 \
         --train-start 2025-02-01 --train-end 2025-09-30 \
         --test-start 2025-10-01 --test-end 2026-01-27
 """
@@ -47,6 +48,25 @@ def write_status(symbol, status):
     os.replace(tmp_path, path)
 
 
+def _archive_validation(symbol):
+    """Save a timestamped copy of FINAL_validation to history."""
+    history_dir = os.path.join(RESULTS_DIR, 'history')
+    os.makedirs(history_dir, exist_ok=True)
+
+    src = os.path.join(RESULTS_DIR, f'{symbol}_FINAL_validation.json')
+    if not os.path.exists(src):
+        return
+    with open(src, 'r') as f:
+        data = json.load(f)
+
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    data['archive_id'] = ts
+    dst = os.path.join(history_dir, f'{symbol}_validation_{ts}.json')
+    with open(dst, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f"  Archived validation: {dst}")
+
+
 def cleanup_study(symbol, phase):
     """Delete existing Optuna study for clean re-run."""
     storage = f'sqlite:///{get_storage_path(symbol)}'
@@ -57,7 +77,7 @@ def cleanup_study(symbol, phase):
         pass  # Study doesn't exist, that's fine
 
 
-def run_symbol(symbol, trials, train_start, train_end, test_start, test_end):
+def run_symbol(symbol, phase_trials, train_start, train_end, test_start, test_end):
     """Run all 4 phases for a symbol."""
 
     status = {
@@ -94,7 +114,7 @@ def run_symbol(symbol, trials, train_start, train_end, test_start, test_end):
                 train_end=train_end,
                 test_start=test_start,
                 test_end=test_end,
-                n_trials=trials,
+                n_trials=phase_trials[phase],
                 results_dir=RESULTS_DIR,
                 storage_path=get_storage_path(symbol),
                 verbose=True,
@@ -134,6 +154,7 @@ def run_symbol(symbol, trials, train_start, train_end, test_start, test_end):
 
     try:
         _run_full_validation(symbol, train_start, train_end, test_start, test_end)
+        _archive_validation(symbol)
         status['state'] = 'complete'
         status['completed_at'] = datetime.now().isoformat()
     except Exception as e:
@@ -221,7 +242,10 @@ def _run_full_validation(symbol, train_start, train_end, test_start, test_end):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ORB Batch Worker')
     parser.add_argument('--symbol', required=True, help='Ticker symbol')
-    parser.add_argument('--trials', type=int, default=200, help='Trials per phase')
+    parser.add_argument('--trials-p1', type=int, default=200, help='Trials for Phase 1')
+    parser.add_argument('--trials-p2', type=int, default=150, help='Trials for Phase 2')
+    parser.add_argument('--trials-p3', type=int, default=75, help='Trials for Phase 3')
+    parser.add_argument('--trials-p4', type=int, default=50, help='Trials for Phase 4')
     parser.add_argument('--train-start', default='2025-02-01')
     parser.add_argument('--train-end', default='2025-09-30')
     parser.add_argument('--test-start', default='2025-10-01')
@@ -229,16 +253,23 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    phase_trials = {
+        1: args.trials_p1,
+        2: args.trials_p2,
+        3: args.trials_p3,
+        4: args.trials_p4,
+    }
+
     print(f"\n{'='*60}")
     print(f"  ORB BATCH WORKER: {args.symbol}")
     print(f"  Train: {args.train_start} -> {args.train_end}")
     print(f"  Test:  {args.test_start} -> {args.test_end}")
-    print(f"  Trials: {args.trials}")
+    print(f"  Trials: P1={phase_trials[1]} P2={phase_trials[2]} P3={phase_trials[3]} P4={phase_trials[4]}")
     print(f"{'='*60}\n")
 
     run_symbol(
         symbol=args.symbol,
-        trials=args.trials,
+        phase_trials=phase_trials,
         train_start=args.train_start,
         train_end=args.train_end,
         test_start=args.test_start,

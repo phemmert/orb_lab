@@ -62,6 +62,48 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # HELPERS
 # =====================================================================
 
+HISTORY_DIR = os.path.join(RESULTS_DIR, 'history')
+os.makedirs(HISTORY_DIR, exist_ok=True)
+
+
+def archive_validation(symbol):
+    """Auto-save a timestamped copy of the current FINAL_validation."""
+    src = os.path.join(RESULTS_DIR, f'{symbol}_FINAL_validation.json')
+    if not os.path.exists(src):
+        return
+    with open(src, 'r') as f:
+        data = json.load(f)
+
+    # Build timestamp tag
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    train_start = data.get('train_period', {}).get('start', '?')
+    train_end = data.get('train_period', {}).get('end', '?')
+    test_end = data.get('test_period', {}).get('end', '?')
+
+    # Add run metadata
+    data['archive_id'] = ts
+    data['run_label'] = f"{train_start} to {test_end}"
+
+    dst = os.path.join(HISTORY_DIR, f'{symbol}_validation_{ts}.json')
+    with open(dst, 'w') as f:
+        json.dump(data, f, indent=2)
+    return dst
+
+
+def get_run_history(symbol):
+    """Load all archived validations for a symbol, newest first."""
+    history = []
+    if not os.path.exists(HISTORY_DIR):
+        return history
+    for fname in sorted(os.listdir(HISTORY_DIR), reverse=True):
+        if fname.startswith(f'{symbol}_validation_') and fname.endswith('.json'):
+            path = os.path.join(HISTORY_DIR, fname)
+            with open(path, 'r') as f:
+                data = json.load(f)
+            data['_filename'] = fname
+            history.append(data)
+    return history
+
 def get_phase_status(symbol):
     """Check which phases have been completed for a symbol."""
     status = {}
@@ -77,6 +119,8 @@ def get_phase_status(symbol):
                 'params': data.get('best_params', {}),
                 'train': data.get('train_results', {}),
                 'test': data.get('test_results', {}),
+                'train_period': data.get('train_period', {}),
+                'test_period': data.get('test_period', {}),
             }
         else:
             status[phase] = {'complete': False}
@@ -191,15 +235,37 @@ with st.sidebar:
     for phase in range(1, 5):
         config = PHASE_CONFIG[phase]
         if phase_status[phase]['complete']:
-            st.success(f"Phase {phase}: {config['name']} ✅")
+            existing_train = phase_status[phase].get('train_period', {})
+            existing_test = phase_status[phase].get('test_period', {})
+            dates_current = (
+                existing_train.get('start') == str(train_start) and
+                existing_train.get('end') == str(train_end) and
+                existing_test.get('start') == str(test_start) and
+                existing_test.get('end') == str(test_end)
+            )
+            if dates_current:
+                st.success(f"Phase {phase}: {config['name']} ✅")
+            else:
+                st.warning(f"Phase {phase}: {config['name']} 🔶 (stale)")
         else:
-            st.warning(f"Phase {phase}: {config['name']} ⬜")
+            st.info(f"Phase {phase}: {config['name']} ⬜")
 
     validation = get_validation_status(symbol)
     if validation:
-        st.success("Validation ✅")
+        val_train = validation.get('train_period', {})
+        val_test = validation.get('test_period', {})
+        val_dates_match = (
+            val_train.get('start') == str(train_start) and
+            val_train.get('end') == str(train_end) and
+            val_test.get('start') == str(test_start) and
+            val_test.get('end') == str(test_end)
+        )
+        if val_dates_match:
+            st.success("Validation ✅")
+        else:
+            st.warning("Validation 🔶 (stale)")
     else:
-        st.warning("Validation ⬜")
+        st.info("Validation ⬜")
 
     st.divider()
 
@@ -231,13 +297,27 @@ with tab_optimize:
     st.header("Phased Optimization")
     st.caption("Run each phase, review results, then approve to continue.")
 
-    # Trial count
-    n_trials = st.slider(
-        "Trials per phase",
-        min_value=10, max_value=500, value=200, step=10,
-        help="Phase 1-2: 200 recommended. Phase 3-4: 50-100 is fine.",
-        key="opt_trials"
-    )
+    # Per-phase trial counts
+    st.caption("**Trials per phase** — more params = more trials needed")
+    tc1, tc2, tc3, tc4 = st.columns(4)
+    with tc1:
+        trials_p1 = st.number_input("P1: Exit Geometry", min_value=10, max_value=500,
+                                     value=200, step=25, key="trials_p1",
+                                     help="16 params — 200 recommended")
+    with tc2:
+        trials_p2 = st.number_input("P2: Volatility", min_value=10, max_value=500,
+                                     value=150, step=25, key="trials_p2",
+                                     help="5 params — 150 recommended")
+    with tc3:
+        trials_p3 = st.number_input("P3: Confluence", min_value=10, max_value=500,
+                                     value=75, step=25, key="trials_p3",
+                                     help="2 params — 75 recommended")
+    with tc4:
+        trials_p4 = st.number_input("P4: Booleans", min_value=10, max_value=500,
+                                     value=50, step=25, key="trials_p4",
+                                     help="3 booleans — 50 recommended")
+
+    phase_trials = {1: trials_p1, 2: trials_p2, 3: trials_p3, 4: trials_p4}
 
     # Refresh status
     phase_status = get_phase_status(symbol)
@@ -249,7 +329,22 @@ with tab_optimize:
         col_header, col_action = st.columns([3, 1])
 
         with col_header:
-            status_icon = "✅" if phase_status[phase]['complete'] else "⬜"
+            # Three-state icon: ✅ = current, 🔶 = stale (different dates), ⬜ = not run
+            if phase_status[phase]['complete']:
+                existing_train = phase_status[phase].get('train_period', {})
+                existing_test = phase_status[phase].get('test_period', {})
+                dates_current = (
+                    existing_train.get('start') == str(train_start) and
+                    existing_train.get('end') == str(train_end) and
+                    existing_test.get('start') == str(test_start) and
+                    existing_test.get('end') == str(test_end)
+                )
+                if dates_current:
+                    status_icon = "✅"
+                else:
+                    status_icon = "🔶"  # Stale — results from different dates
+            else:
+                status_icon = "⬜"
             st.subheader(f"Phase {phase}: {config['name']} {status_icon}")
             st.caption(config['description'])
             st.caption(f"Objective: `{config['objective']}` | Min trades: {config['min_trades']}")
@@ -279,10 +374,31 @@ with tab_optimize:
             else:
                 can_run = date_error is None
 
-            button_label = "🔄 Re-run" if phase_status[phase]['complete'] else "▶️ Run"
+            # Check if existing results match current date range
+            dates_match = False
+            if phase_status[phase]['complete']:
+                existing_train = phase_status[phase].get('train_period', {})
+                existing_test = phase_status[phase].get('test_period', {})
+                dates_match = (
+                    existing_train.get('start') == str(train_start) and
+                    existing_train.get('end') == str(train_end) and
+                    existing_test.get('start') == str(test_start) and
+                    existing_test.get('end') == str(test_end)
+                )
+
+            if phase_status[phase]['complete'] and dates_match:
+                button_label = "🔄 Re-run"
+            elif phase_status[phase]['complete'] and not dates_match:
+                button_label = "▶️ Run (new dates)"
+            else:
+                button_label = "▶️ Run"
+
             run_key = f"run_phase_{phase}_{symbol}"
 
             if st.button(button_label, key=run_key, disabled=not can_run, type="primary"):
+                # Initialize abort flag
+                st.session_state[f'abort_{symbol}_{phase}'] = False
+
                 # Delete stale Optuna study
                 with st.spinner("Clearing previous study..."):
                     delete_optuna_study(symbol, phase)
@@ -290,14 +406,28 @@ with tab_optimize:
                 # Run optimization
                 progress_bar = st.progress(0)
                 status_text = st.empty()
+                abort_placeholder = st.empty()
+
+                # Abort button (appears during run)
+                abort_pressed = abort_placeholder.button(
+                    "⛔ Abort (save progress)",
+                    key=f"abort_btn_{phase}_{symbol}_{time.time()}"
+                )
+                if abort_pressed:
+                    st.session_state[f'abort_{symbol}_{phase}'] = True
 
                 def phase_callback(study, trial):
-                    pct = (trial.number + 1) / n_trials
-                    progress_bar.progress(pct)
+                    # Check abort flag
+                    if st.session_state.get(f'abort_{symbol}_{phase}', False):
+                        study.stop()
+                        return
+
+                    pct = (trial.number + 1) / phase_trials[phase]
+                    progress_bar.progress(min(pct, 1.0))
                     best = study.best_value if study.best_trial else float('-inf')
                     score_str = f"{best:.4f}" if best != float('-inf') else "-inf"
                     status_text.text(
-                        f"Trial {trial.number + 1}/{n_trials} | Best: {score_str}"
+                        f"Trial {trial.number + 1}/{phase_trials[phase]} | Best: {score_str}"
                     )
 
                 try:
@@ -310,7 +440,7 @@ with tab_optimize:
                         train_end=str(train_end),
                         test_start=str(test_start),
                         test_end=str(test_end),
-                        n_trials=n_trials,
+                        n_trials=phase_trials[phase],
                         results_dir=RESULTS_DIR,
                         verbose=False,
                     )
@@ -335,13 +465,22 @@ with tab_optimize:
 
                     study.optimize(
                         opt._objective,
-                        n_trials=n_trials,
+                        n_trials=phase_trials[phase],
                         callbacks=[phase_callback],
                         show_progress_bar=False,
                     )
 
-                    progress_bar.progress(1.0)
-                    status_text.text("Running validation...")
+                    # Clear abort button
+                    abort_placeholder.empty()
+
+                    was_aborted = st.session_state.get(f'abort_{symbol}_{phase}', False)
+                    completed_trials = len(study.trials)
+
+                    if was_aborted:
+                        status_text.text(f"Aborted at trial {completed_trials}/{phase_trials[phase]}. Saving best result...")
+                    else:
+                        progress_bar.progress(1.0)
+                        status_text.text("Running validation...")
 
                     # Get best params and save
                     best_trial = study.best_trial
@@ -368,7 +507,9 @@ with tab_optimize:
                             'start': str(test_start),
                             'end': str(test_end)
                         },
-                        'n_trials': n_trials,
+                        'n_trials': phase_trials[phase],
+                        'n_trials_completed': completed_trials,
+                        'aborted': was_aborted,
                         'best_score': best_trial.value,
                         'best_params': best_searched_params,
                         'fixed_params': opt.fixed_params,
@@ -382,10 +523,17 @@ with tab_optimize:
                     with open(output_path, 'w') as f:
                         json.dump(output, f, indent=2)
 
-                    status_text.text(f"✅ Phase {phase} complete!")
-                    st.success(
-                        f"Phase {phase} done! Score: {best_trial.value:.4f}"
-                    )
+                    if was_aborted:
+                        status_text.text(f"✅ Phase {phase} saved (aborted at {completed_trials} trials)")
+                        st.warning(
+                            f"Phase {phase} aborted at {completed_trials}/{phase_trials[phase]} trials. "
+                            f"Best score: {best_trial.value:.4f} — saved."
+                        )
+                    else:
+                        status_text.text(f"✅ Phase {phase} complete!")
+                        st.success(
+                            f"Phase {phase} done! Score: {best_trial.value:.4f}"
+                        )
 
                     # Show results inline
                     display_metrics_comparison(
@@ -446,7 +594,9 @@ with tab_validate:
                             test_end=str(test_end),
                             results_dir=RESULTS_DIR,
                         )
-                        st.success("Validation complete!")
+                        # Auto-archive this run
+                        archive_validation(symbol)
+                        st.success("Validation complete! (archived to history)")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Validation failed: {e}")
@@ -571,6 +721,115 @@ with tab_validate:
                         st.error(f"A/B test failed: {e}")
         else:
             st.info("Run validation first to enable A/B testing.")
+
+        # --- Run History ---
+        st.divider()
+        st.subheader("📜 Run History")
+        st.caption("Every validation is auto-archived. Compare runs across different dates, trials, or parameter sets.")
+
+        history = get_run_history(symbol)
+
+        if not history:
+            st.info("No archived runs yet. Run a validation to start building history.")
+        else:
+            st.caption(f"{len(history)} archived run(s) for {symbol}")
+
+            # Build comparison table
+            hist_rows = []
+            for run in history:
+                train_p = run.get('train_period', {})
+                test_p = run.get('test_period', {})
+                train_r = run.get('train_results', {})
+                test_r = run.get('test_results', {})
+
+                hist_rows.append({
+                    'Date': run.get('validation_date', '?')[:16].replace('T', ' '),
+                    'Train Period': f"{train_p.get('start', '?')} → {train_p.get('end', '?')}",
+                    'Test Period': f"{test_p.get('start', '?')} → {test_p.get('end', '?')}",
+                    'Train Trades': train_r.get('total_trades', 0),
+                    'Test Trades': test_r.get('total_trades', 0),
+                    'Train WR%': f"{train_r.get('win_rate', 0):.1f}%",
+                    'Test WR%': f"{test_r.get('win_rate', 0):.1f}%",
+                    'Train R': f"{train_r.get('total_r', 0):+.2f}",
+                    'Test R': f"{test_r.get('total_r', 0):+.2f}",
+                    'Train PF': f"{train_r.get('profit_factor', 0):.2f}",
+                    'Test PF': f"{test_r.get('profit_factor', 0):.2f}",
+                    'Test DD': f"{test_r.get('max_drawdown_r', 0):.2f}R",
+                })
+
+            df_hist = pd.DataFrame(hist_rows)
+            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+
+            # Side-by-side detail comparison
+            if len(history) >= 2:
+                st.caption("**Compare two runs:**")
+                comp_cols = st.columns(2)
+
+                run_labels = [
+                    f"{run.get('validation_date', '?')[:16].replace('T', ' ')} | "
+                    f"Test R: {run.get('test_results', {}).get('total_r', 0):+.2f}"
+                    for run in history
+                ]
+
+                with comp_cols[0]:
+                    sel_a = st.selectbox("Run A", options=range(len(history)),
+                                         format_func=lambda i: run_labels[i],
+                                         index=0, key="hist_a")
+                with comp_cols[1]:
+                    sel_b = st.selectbox("Run B", options=range(len(history)),
+                                         format_func=lambda i: run_labels[i],
+                                         index=min(1, len(history)-1), key="hist_b")
+
+                if sel_a != sel_b:
+                    run_a = history[sel_a]
+                    run_b = history[sel_b]
+
+                    metrics = ['total_trades', 'win_rate', 'total_r', 'avg_r_per_trade',
+                               'profit_factor', 'max_drawdown_r']
+                    fmt_map = {
+                        'total_trades': '{:.0f}',
+                        'win_rate': '{:.1f}%',
+                        'total_r': '{:+.2f}',
+                        'avg_r_per_trade': '{:+.3f}',
+                        'profit_factor': '{:.2f}',
+                        'max_drawdown_r': '{:.2f}R',
+                    }
+
+                    comp_rows = []
+                    for m in metrics:
+                        a_test = run_a.get('test_results', {}).get(m, 0)
+                        b_test = run_b.get('test_results', {}).get(m, 0)
+                        delta = b_test - a_test
+
+                        fmt = fmt_map.get(m, '{:.2f}')
+                        comp_rows.append({
+                            'Metric': m.replace('_', ' ').title(),
+                            'Run A (Test)': fmt.format(a_test),
+                            'Run B (Test)': fmt.format(b_test),
+                            'Delta': f"{delta:+.2f}",
+                        })
+
+                    df_comp = pd.DataFrame(comp_rows)
+                    st.dataframe(df_comp, use_container_width=True, hide_index=True)
+
+                    # Show parameter differences
+                    with st.expander("Parameter Differences"):
+                        params_a = run_a.get('all_params', {})
+                        params_b = run_b.get('all_params', {})
+                        all_keys = sorted(set(list(params_a.keys()) + list(params_b.keys())))
+
+                        diffs = []
+                        for k in all_keys:
+                            va = params_a.get(k)
+                            vb = params_b.get(k)
+                            if va != vb:
+                                diffs.append({'Parameter': k, 'Run A': str(va), 'Run B': str(vb)})
+
+                        if diffs:
+                            st.dataframe(pd.DataFrame(diffs), use_container_width=True,
+                                         hide_index=True)
+                        else:
+                            st.caption("Parameters are identical between these runs.")
 
 
 # =====================================================================
@@ -1064,13 +1323,7 @@ with tab_batch:
         key="batch_symbols"
     )
 
-    col_trials, col_workers = st.columns(2)
-    with col_trials:
-        batch_trials = st.slider(
-            "Trials per phase",
-            min_value=50, max_value=500, value=200, step=50,
-            key="batch_trials"
-        )
+    col_workers, _ = st.columns(2)
     with col_workers:
         max_workers = st.slider(
             "Max parallel workers",
@@ -1078,6 +1331,21 @@ with tab_batch:
             help="i9-13980HX: 4-6 is ideal",
             key="batch_workers"
         )
+
+    st.caption("**Trials per phase**")
+    bc1, bc2, bc3, bc4 = st.columns(4)
+    with bc1:
+        batch_t1 = st.number_input("P1", min_value=10, max_value=500,
+                                    value=200, step=25, key="batch_t1")
+    with bc2:
+        batch_t2 = st.number_input("P2", min_value=10, max_value=500,
+                                    value=150, step=25, key="batch_t2")
+    with bc3:
+        batch_t3 = st.number_input("P3", min_value=10, max_value=500,
+                                    value=75, step=25, key="batch_t3")
+    with bc4:
+        batch_t4 = st.number_input("P4", min_value=10, max_value=500,
+                                    value=50, step=25, key="batch_t4")
 
     # Date ranges (use sidebar values)
     st.caption(
@@ -1107,7 +1375,10 @@ with tab_batch:
             cmd = [
                 sys.executable, worker_script,
                 '--symbol', sym,
-                '--trials', str(batch_trials),
+                '--trials-p1', str(batch_t1),
+                '--trials-p2', str(batch_t2),
+                '--trials-p3', str(batch_t3),
+                '--trials-p4', str(batch_t4),
                 '--train-start', str(train_start),
                 '--train-end', str(train_end),
                 '--test-start', str(test_start),

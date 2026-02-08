@@ -2,23 +2,68 @@
   "symbol": "AMD",
   "phase": 3,
   "phase_name": "Confluence Gating",
-  "optimization_date": "2026-02-06T00:26:48.896634",
+  "optimization_date": "2026-02-07T15:52:40.258712",
   "optimizer_version": "v3_phased",
   "objective": "robust_pf",
   "train_period": {
-    "start": "2025-08-29",
-    "end": "2025-11-15"
+    "start": "2025-02-01",
+    "end": "2025-09-30"
   },
   "test_period": {
-    "start": "2025-11-16",
+    "start": "2025-10-01",
     "end": "2026-01-27"
   },
-  "n_trials": 200,
-  "best_score": 1.279757764735823,
+  "n_trials": 75,
+  "n_trials_completed": 75,
+  "aborted": false,
+  "best_score": 6.057140981993461,
   "best_params": {
     "min_confluence": 3
   },
-  "fixed_params": {},
-  "train_results": {},
-  "test_results": {}
+  "fixed_params": {
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "use_ssl_momentum": true,
+    "use_wae_acceleration": true,
+    "use_qqe_momentum": true,
+    "trading_start_minutes": 570,
+    "enable_confluence": true,
+    "break_even_rr": 0.4,
+    "profit_target_rr": 2.25,
+    "trailing_stop_distance": 1.9000000000000001,
+    "ema_tighten_zone": 0.45,
+    "tightened_trail_distance": 0.5,
+    "ema_confirmation_bars": 2,
+    "atr_stop_mult": 1.5,
+    "min_stop_atr": 0.15000000000000002,
+    "swing_lookback": 3,
+    "min_acceptable_rr": 1.0,
+    "ema_period": 8,
+    "vwap_stop_distance": 0.5,
+    "max_target_atr": 2.5,
+    "breakout_threshold_mult": 0.07500000000000001,
+    "min_body_strength": 0.6000000000000001,
+    "trading_end_minutes": 630,
+    "low_vol_threshold": 0.6,
+    "high_vol_threshold": 1.5,
+    "extreme_vol_threshold": 2.0,
+    "skip_low_vol_c_grades": true,
+    "low_vol_min_rr": 2.0
+  },
+  "train_results": {
+    "total_trades": 37,
+    "win_rate": 73.91304347826086,
+    "total_r": 18.690981270086684,
+    "avg_r_per_trade": 0.5051616559482888,
+    "profit_factor": 4.70519463846431,
+    "max_drawdown_r": 1.1469297701243768
+  },
+  "test_results": {
+    "total_trades": 88,
+    "win_rate": 53.2258064516129,
+    "total_r": 26.9082689954715,
+    "avg_r_per_trade": 0.30577578403944883,
+    "profit_factor": 1.7660699214460134,
+    "max_drawdown_r": 5.08295268185241
+  }
 }
