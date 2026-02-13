@@ -1041,6 +1041,9 @@ class HMMBacktester:
                   f"[C:{self.position.confluence_score:.1f} IB:{self.position.ib_phase}]")
         
         self.position.reset()
+        # Reset cooldown so min_bars_between_entries applies after exits
+        # (Pine: strategy.exit fires at bar close; new entry earliest next bar)
+        self.bars_since_last_entry = 0
     
     # ═══════════════════════════════════════════════════════════════════════
     # MAIN PROCESSING LOOP (THE HMM DIFFERENCE)
@@ -1069,6 +1072,7 @@ class HMMBacktester:
             
             time_str = ts.strftime('%H:%M')
             self.bars_since_last_entry += 1
+            closed_this_bar = False
             
             atr = bar['atr_rth']
             ema = bar['ema9']
@@ -1083,8 +1087,10 @@ class HMMBacktester:
                     reason = "TRAILING STOP" if self.position.trailing_activated else \
                              "BREAK-EVEN STOP" if self.position.stop_moved_to_be else "INITIAL STOP"
                     self._close_position(exit_price, reason, time_str, date_str)
+                    closed_this_bar = True
                 elif self._check_ema_exit(bar, ema):
                     self._close_position(bar['close'], "EMA EXIT", time_str, date_str)
+                    closed_this_bar = True
                 
                 if self._in_position():
                     if self._check_break_even(bar):
@@ -1135,6 +1141,7 @@ class HMMBacktester:
             # ═══════════════════════════════════════════════════════════
             
             if (not self._in_position() 
+                and not closed_this_bar
                 and self._is_entry_window(ts) 
                 and self.bars_since_last_entry >= self.min_bars_between_entries):
                 

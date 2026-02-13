@@ -1,0 +1,3978 @@
+// SCRIPT_ID: UNIFIED_HMM_MAIN
+// STOP VALIDITY FIX - December 2024
+// CHANGES:
+// 1. Removed all 1-penny clamp code (math.min/max with 0.01)
+// 2. Added minimum stop distance validation (15% of ATR)
+// 3. VWAP stops validated for correct side AND minimum distance
+// 4. Swing stops validated for minimum distance
+// 5. Invalid stops fallback to ATR with "ATR-Fallback" label
+// 6. evaluateBestStop returns -1 for invalid stops (shown as "invalid" in table)
+// 7. Chart Stats table now shows live Open P&L and Position data
+
+
+//@version=5
+indicator("Hidden Markov Model+Presets", overlay=true, max_bars_back=500)
+
+
+// ========================================
+// SETTINGS GROUPS
+// ========================================
+
+// Display Settings
+var grpDisplay = "Display Settings"
+showSSL = input.bool(true, "Show SSL Hybrid", group=grpDisplay)
+showEntrySignals = input.bool(true, "Show Entry Signals", group=grpDisplay)
+showRiskLines = input.bool(true, "Show Risk/Reward Lines", group=grpDisplay)
+showTradeBoxes = input.bool(true, "Show Trade Boxes", group=grpDisplay, tooltip="Draw dynamic risk/reward boxes like TV's Long/Short tool - updates with trailing stops & BE")
+showPositionInfo = input.bool(true, "Show Position Info", group=grpDisplay)
+showConfluenceTable = input.bool(true, "Show Confluence Table", group=grpDisplay)
+showPresetStatus = input.bool(true, "Show Preset Status Table", group=grpDisplay)
+showIBLevels = input.bool(true, "Show Initial Balance Levels", group=grpDisplay)  // NEW
+// CAM Level Settings (Bruz-compatible)
+camRangeMode = input.string("Higher Range", "CAM Range Mode", options=["RTH Only", "Higher Range", "Lower Range", "ETH Only", "Auto"], group=grpDisplay, tooltip="RTH Only: RTH range only. Higher Range: max(RTH, ETH). Lower Range: min(RTH, ETH). ETH Only: Full ETH. Auto: Switch like Bruz based on overnight range.")
+camCloseAnchor = input.string("RTH Close", "CAM Close Anchor", options=["RTH Close", "ETH Close", "Auto", "Daily Close"], group=grpDisplay, tooltip="RTH Close: Bruz default. ETH Close: Use when Bruz shows 'Using ETH Data'. Auto: Match Bruz's auto-switch logic.")
+useDailyTF = input.bool(false, "Use Daily TF for Cams", group=grpDisplay, tooltip="When ON, use request.security for daily H/L/C. When OFF, use intraday aggregation.")
+useIBFilter = input.bool(false, "Require IB Breakout for Entry", group=grpDisplay)  // NEW
+showSqueeze = input.bool(true, "Show Squeeze Zones", group=grpDisplay)
+sqzTransparency = input.int(90, "Squeeze Transparency", minval=80, maxval=95, group=grpDisplay, tooltip="Lower = more visible, Higher = more subtle")
+
+// IB Line Style Settings
+ibHighColor = input.color(color.rgb(0, 255, 0), "IB High Color", group=grpDisplay)
+ibLowColor = input.color(color.rgb(255, 0, 0), "IB Low Color", group=grpDisplay)
+ibLineWidth = input.int(2, "IB Line Width", minval=1, maxval=4, group=grpDisplay)
+ibLineStyle = input.string("Dashed", "IB Line Style", options=["Solid", "Dashed", "Dotted"], group=grpDisplay)
+// IB Buffer Settings (add these after ibLineStyle)
+ibBufferType = input.string("ATR", "IB Buffer Type", options=["None", "Fixed", "ATR", "Percentage"], group=grpDisplay, tooltip="Buffer required beyond IB levels for breakout")
+ibPeriodMinutes = input.int(60, "IB Period (Minutes)", minval=15, maxval=120, step=15, group=grpDisplay, tooltip="Initial Balance formation period in minutes")
+ibBufferFixed = input.float(0.10, "Fixed Buffer ($)", minval=0.01, maxval=1.0, step=0.01, group=grpDisplay)
+ibBufferATR = input.float(0.1, "ATR Buffer Multiplier", minval=0.0, maxval=0.5, step=0.05, group=grpDisplay)
+ibBufferPercent = input.float(0.1, "Percentage Buffer (%)", minval=0.0, maxval=1.0, step=0.05, group=grpDisplay)
+
+// Label Management Settings
+var grpLabelMgmt = "Label Management"
+maxHistoricalLabels = input.int(5, "Max Historical Labels", minval=0, maxval=20, group=grpLabelMgmt, tooltip="0 = No historical labels, only current position")
+autoDeleteLabels = input.bool(true, "Auto-Delete Old Labels", group=grpLabelMgmt, tooltip="Automatically remove labels older than X bars")
+labelDeleteAfterBars = input.int(50, "Delete Labels After X Bars", minval=10, maxval=200, group=grpLabelMgmt)
+showOnlyActivePosition = input.bool(false, "Show Only Active Position Labels", group=grpLabelMgmt, tooltip="Hide all historical entry/exit labels")
+
+// Label Settings
+var grpLabels = "Label Settings"
+labelOffset = input.int(12, "Label Vertical Offset", minval=5, maxval=50, group=grpLabels)  // Set to 12 (between 10 and 15)
+labelSize = input.string("Normal", "Label Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=grpLabels)  // Changed default to "Normal"
+
+// Market Hours Settings
+var grpMarket = "Market Hours"
+useMarketHours = input.bool(true, "Only Trade During Market Hours", group=grpMarket)
+marketSession = input.session("0930-1600", "Market Hours (ET)", group=grpMarket)
+earliestEntryTime = input.session("1030-1600", "Earliest Entry Window (ET)", group=grpMarket, tooltip="No trades before this time. Default 10:30 = after IB/ORB period completes.")
+
+// Quality Filter Settings
+var grpQuality = "Quality Filter Settings"
+useVolatilityFilter = input.bool(true, "Use Volatility Filter", group=grpQuality, tooltip="Only trade when ATR indicates sufficient momentum")
+minATRMultiple = input.float(1.5, "Min ATR Multiple vs 20-period avg", minval=0.8, maxval=2.5, step=0.1, group=grpQuality)
+avoidLunchHour = input.bool(true, "Skip 11:30-13:30 ET", group=grpQuality, tooltip="Avoid choppy lunch period")
+useHTFTrendFilter = input.bool(true, "Use Higher Timeframe Trend Filter", group=grpQuality, tooltip="Only trade with 5-minute trend")
+htfTrendLength = input.int(5, "HTF Trend EMA Length", minval=3, maxval=20, group=grpQuality)
+useMarketRegimeFilter = input.bool(true, "Use Market Regime Filter", group=grpQuality, tooltip="Check SPY/QQQ trend before trades")
+marketETF = input.string("SPY", "Market ETF", options=["SPY", "QQQ"], group=grpQuality)
+marketTrendLength = input.int(10, "Market Trend EMA Length", minval=5, maxval=30, group=grpQuality)
+useVolumeFilter = input.bool(true, "Use Volume Filter", group=grpQuality)
+volumeThreshold = input.float(1.5, "Min Volume Multiple", minval=1.0, maxval=2.0, group=grpQuality)
+enableVolume = input.bool(true, "Include Volume in Confluence", group=grpQuality, tooltip="When enabled, volume Z-score contributes to confluence score")
+volLookback = input.int(20, "Volume Z Lookback Period", minval=10, maxval=50, group=grpQuality)
+
+// Risk Management Settings
+var grpRisk = "Risk Management"
+fixedRisk = input.float(200, "Fixed Risk Amount ($)", minval=50, maxval=1000, step=50, group=grpRisk)
+riskRewardRatio = input.float(2.0, "Risk:Reward Ratio", minval=1.0, maxval=5.0, step=0.5, group=grpRisk)
+atrStopMultiplier = input.float(2.0, "ATR Stop Multiplier", minval=1.0, maxval=4.0, step=0.25, group=grpRisk, tooltip="Multiplier for ATR-based stop loss distance")
+
+// Adaptive Volatility Settings
+var grpAdaptive = "Adaptive Volatility"
+useAdaptiveVolatility = input.bool(true, "Use Adaptive Volatility Engine", group=grpAdaptive, tooltip="Dynamically adjust stop type and R:R based on current volatility regime")
+fastAtrLength = input.int(5, "Fast ATR Length", minval=2, maxval=20, group=grpAdaptive)
+volLookbackBars = input.int(12, "Local Vol Regime Bars", minval=5, maxval=60, group=grpAdaptive)
+lowVolThreshold = input.float(0.8, "Low Vol Threshold (VF)", minval=0.2, maxval=2.0, step=0.05, group=grpAdaptive)
+highVolThreshold = input.float(1.3, "High Vol Threshold (VF)", minval=1.0, maxval=3.0, step=0.05, group=grpAdaptive)
+extremeVolThreshold = input.float(2.0, "Extreme Vol Threshold (VF)", minval=1.5, maxval=5.0, step=0.1, group=grpAdaptive)
+maxTargetATR = input.float(3.0, "Max Target ATR (skip trade)", minval=1.5, maxval=5.0, step=0.25, group=grpAdaptive, tooltip="Skip trades requiring more than this ATR move to hit target")
+minAcceptableRR = input.float(1.5, "Minimum Acceptable R:R", minval=1.0, maxval=2.5, step=0.1, group=grpAdaptive, tooltip="Skip trades below this R:R even after adjustment")
+skipLowVolCGrades = input.bool(true, "Skip C-Grade Trades in LOW Vol", group=grpAdaptive, tooltip="When enabled, requires B-grade (2.0+ R:R) minimum in LOW volatility regimes")
+lowVolMinRR = input.float(2.0, "LOW Vol Minimum R:R", minval=1.5, maxval=10.0, step=0.1, group=grpAdaptive, tooltip="Minimum R:R required when volatility is LOW")
+autoSelectStop = input.bool(true, "Auto-Select Best Stop", group=grpAdaptive, tooltip="Automatically choose stop method with best R:R")
+showStopOptionsTable = input.bool(true, "Show Stop Options Table", group=grpAdaptive, tooltip="Display all stop type R:Rs when in position")
+showChartStats = input.bool(true, "Show Chart Stats Table", group=grpAdaptive, tooltip="Display P&L tracking, win rate, and trade statistics")
+
+// === Exit Strategy (synced with ORB) ===
+var grpExits = "Exit Strategy Sequence"
+useBreakEven = input.bool(true, title="1. Move to Break Even when target reached", group=grpExits)
+breakEvenRR = input.float(0.5, title="   Break Even at R:R", minval=0.1, maxval=2.0, step=0.1, group=grpExits, tooltip="Moves stop to entry price when profit reaches this multiple of initial risk")
+useAdaptiveBE = input.bool(true, title="   Adaptive BE (Vol-Based)", group=grpExits, tooltip="When ON: adjusts BE threshold by volatility state (LOW +0.2, HIGH -0.1, EXTREME -0.2). When OFF: uses fixed R:R above.")
+
+useEmaCrossExit = input.bool(true, title="2. Use EMA Exit after Break Even", group=grpExits, tooltip="When enabled, will exit on EMA cross after break-even is achieved")
+emaPeriod = input.int(9, title="   EMA Period", minval=5, maxval=50, group=grpExits)
+emaConfirmationBars = input.int(1, title="   Confirmation Bars", minval=0, maxval=5, group=grpExits, tooltip="Number of bars below/above EMA to confirm exit")
+emaBodyPercentage = input.float(60.0, title="   Body % Beyond EMA", minval=10.0, maxval=100.0, step=5.0, group=grpExits, tooltip="Percentage of candle body that must be beyond EMA to trigger exit")
+
+// Alternative EMA Cross Exit
+useEmaCrossExit920 = input.bool(false, title="Use 9/20 EMA Cross Exit (Alternative)", group=grpExits, tooltip="Exit on 9/20 EMA cross. Only active if 'Use EMA Exit after Break Even' is OFF")
+ema20Period = input.int(20, title="   Slow EMA Period", minval=10, maxval=50, group=grpExits)
+
+useTrailingStop = input.bool(true, title="3. Use Trailing Stop at Profit Target", group=grpExits)
+profitTargetRR = input.float(2.0, title="   Profit Target R:R", minval=0.5, maxval=10.0, step=0.1, group=grpExits, tooltip="Profit target level and trailing stop activation")
+trailingStopDistance = input.float(1.2, title="   Trailing Stop Distance (ATR Mult)", minval=0.1, maxval=5.0, step=0.05, group=grpExits)
+
+// Advanced Trailing Settings
+var grpTrail = "Advanced Trailing Settings"
+aggressiveTrailing = input.bool(true, title="Use Aggressive Trailing Near EMA", tooltip="Tightens trailing stop when price approaches EMA", group=grpTrail)
+emaTightenZone = input.float(0.3, title="EMA Zone for Tighter Trail (% of ATR)", minval=0.1, maxval=2.0, step=0.05, group=grpTrail)
+tightenedTrailDistance = input.float(0.3, title="Tightened Trail Distance (ATR Mult)", minval=0.1, maxval=2.0, step=0.05, group=grpTrail)
+
+// Confluence Settings
+var grpConfluence = "Confluence Requirements"
+manualMinScore = input.int(4, "Minimum Signals Required", minval=1, maxval=4, group=grpConfluence, 
+     tooltip="Set your normal requirement here. When 'Require IB Breakout' is OFF, this automatically reduces to maximum 3")
+includeIBInConfluence = input.bool(false, "Include IB Breakout as Signal", group=grpConfluence, 
+     tooltip="When checked: IB counts as 4th signal")
+minBarsBetweenEntries = input.int(1, "Min Bars Between Entries", minval=1, maxval=10, group=grpConfluence, tooltip="Minimum bars required after exit before new entry allowed")
+
+
+// Auto-adjust confluence when IB filter is disabled
+minConfluenceScore = useIBFilter ? manualMinScore : math.min(manualMinScore, 3)
+
+// Stop Loss Selection
+var grpStopSelection = "Stop Loss Selection"
+stopLossType = input.string("Hybrid", "Stop Loss Type", options=["ATR", "Swing", "VWAP", "Hybrid", "Manual"], group=grpStopSelection, tooltip="ATR: ATR-based stop\nSwing: Recent swing high/low\nVWAP: VWAP-based stop\nHybrid: Most conservative\nManual: Fixed points from entry")
+swingLookback = input.int(5, "Swing Lookback Bars", minval=3, maxval=30, group=grpStopSelection)
+swingBuffer = input.float(0.02, "Swing Buffer (ATR mult)", minval=0.0, maxval=1.0, step=0.05, group=grpStopSelection)
+vwapStopDistance = input.float(0.3, "VWAP Stop Distance (ATR mult)", minval=0.1, maxval=2.0, step=0.05, group=grpStopSelection)
+manualStopPoints = input.float(1.0, "Manual Stop Distance (points)", minval=0.1, maxval=10.0, step=0.1, group=grpStopSelection, tooltip="Fixed point distance from entry")
+hybridExcludeVwap = input.bool(false, "Exclude VWAP from Hybrid", group=grpStopSelection, tooltip="When true, hybrid only considers ATR and Swing stops")
+
+// SSL HYBRID SETTINGS - ENHANCED WITH SMOOTHING OPTIONS
+var grpSSL = "SSL Hybrid Settings"
+sslBaseline = input.string("HMA", "Baseline Type", options=["SMA", "EMA", "HMA", "WMA", "DEMA", "TEMA"], group=grpSSL)
+sslBaselineLength = input.int(25, "Baseline Length", minval=10, maxval=200, group=grpSSL)  // Changed from 45 to 25
+sslSmoothingEnabled = input.bool(true, "Enable SSL Smoothing", group=grpSSL)
+sslSmoothingMethod = input.string("Super Smoother", "Smoothing Method", options=["Super Smoother", "Jurik Filter", "EMA Post-Smooth", "Gaussian"], group=grpSSL)
+sslSmoothingFactor = input.float(2.0, "Smoothing Factor", minval=1.0, maxval=5.0, step=0.5, group=grpSSL)
+// SSL Gap Widening Filter - requires price accelerating away from baseline
+useSSLMomentumFilter = input.bool(true, "Require SSL Gap Widening", group=grpSSL, tooltip="Price must be accelerating away from baseline, not drifting back. Prevents weak SSL crosses.")
+sslType = input.string("JMA", "SSL2 Type", options=["SMA", "EMA", "HMA", "JMA"], group=grpSSL)
+sslLength = input.int(5, "SSL2 Length", minval=1, maxval=50, group=grpSSL)
+exitType = input.string("HMA", "Exit Type", options=["SMA", "EMA", "HMA", "WMA"], group=grpSSL)
+exitLength = input.int(10, "Exit Length", minval=5, maxval=50, group=grpSSL)  // Changed from 15 to 10
+
+// WADDAH ATTAR EXPLOSION SETTINGS
+var grpWAE = "Waddah Attar Settings"
+waeSensitivity = input.int(275, "Sensitivity", minval=100, maxval=300, group=grpWAE)  // Changed from 190 to 275
+waeFastEMA = input.int(15, "Fast EMA", minval=5, maxval=50, group=grpWAE)  // Changed from 20 to 15
+waeSlowEMA = input.int(30, "Slow EMA", minval=20, maxval=100, group=grpWAE)  // Changed from 40 to 30
+waeBBLength = input.int(20, "BB Length", minval=10, maxval=50, group=grpWAE)  // Changed from 20 to 20
+waeBBMultiplier = input.float(2.0, "BB StDev Multiplier", minval=1.0, maxval=3.0, step=0.5, group=grpWAE)
+// WAE Acceleration Filter - requires momentum to be INCREASING (synced with ORB)
+useWAEAcceleration = input.bool(true, "Require WAE Acceleration", group=grpWAE, tooltip="WAE bars must be growing (accelerating), not dying. Filters out weak/fading momentum.")
+
+// ========================================
+// SQUEEZE DETECTION
+// ========================================
+
+// Squeeze parameters
+sqzBBLength = 20
+sqzBBMult = 2.0
+sqzKCLength = 20
+sqzKCMult = 1.5
+
+// Calculate Bollinger Bands
+sqzBasis = ta.sma(close, sqzBBLength)
+sqzDev = sqzBBMult * ta.stdev(close, sqzBBLength)
+sqzUpperBB = sqzBasis + sqzDev
+sqzLowerBB = sqzBasis - sqzDev
+
+// Calculate Keltner Channels
+sqzKCBasis = ta.sma(close, sqzKCLength)
+sqzKCRange = ta.atr(sqzKCLength)
+sqzUpperKC = sqzKCBasis + (sqzKCRange * sqzKCMult)
+sqzLowerKC = sqzKCBasis - (sqzKCRange * sqzKCMult)
+
+// Squeeze is ON when BB is inside KC
+sqzOn = (sqzLowerBB > sqzLowerKC) and (sqzUpperBB < sqzUpperKC)
+
+// Momentum direction (same method as TTM Squeeze)
+sqzMomSrc = close - math.avg(math.avg(ta.highest(high, sqzBBLength), ta.lowest(low, sqzBBLength)), sqzBasis)
+sqzMom = ta.linreg(sqzMomSrc, sqzBBLength, 0)
+
+// Directional bias during squeeze
+sqzBullish = sqzMom > 0
+sqzBearish = sqzMom <= 0
+
+// QQE MOD SETTINGS
+var grpQQE = "QQE Mod Settings"
+qqeRSI1Length = input.int(9, "Primary RSI Length", minval=2, maxval=30, group=grpQQE)
+qqeRSI1Smoothing = input.int(5, "Primary RSI Smoothing", minval=1, maxval=30, group=grpQQE)  // Changed from 6 to 5
+qqeFactor1 = input.float(3.0, "Primary QQE Factor", minval=0.5, maxval=10.0, step=0.1, group=grpQQE)
+qqeRSI2Length = input.int(4, "Secondary RSI Length", minval=2, maxval=30, group=grpQQE)  // Changed from 6 to 4
+qqeRSI2Smoothing = input.int(4, "Secondary RSI Smoothing", minval=1, maxval=30, group=grpQQE)  // Changed from 5 to 4
+qqeFactor2 = input.float(1.61, "Secondary QQE Factor", minval=0.5, maxval=10.0, step=0.01, group=grpQQE)
+qqeBBLength = input.int(25, "QQE BB Length", minval=20, maxval=100, group=grpQQE)  // Changed from 50 to 25
+qqeBBMultiplier = input.float(0.35, "QQE BB Multiplier", minval=0.1, maxval=1.0, step=0.05, group=grpQQE)
+thresholdSecondary = input.float(3.0, "Secondary Threshold", minval=0.5, maxval=10.0, step=0.1, group=grpQQE, tooltip="Threshold for secondary RSI signal")
+consecutiveIncreasingBars = input.int(3, "Consecutive Increasing Bars", minval=1, maxval=10, group=grpQQE, tooltip="Number of bars signal strength must increase before triggering")
+// QQE Momentum Direction Filter - requires momentum moving WITH trade direction
+useQQEMomentumFilter = input.bool(true, "Require QQE Momentum Direction", group=grpQQE, tooltip="Only accept QQE signals when momentum is accelerating in trade direction. Filters out curling/dying momentum.")
+
+// Symbol Preset Settings
+var grpPresets = "Symbol Presets"
+useSymbolPresets = input.bool(true, "Use Symbol Presets", group=grpPresets, tooltip = "If ON: Parameters change based on the symbol")
+presetComparisonMode = input.bool(false, "⚡ Comparison Mode (Show Defaults)", group=grpPresets, tooltip = "Toggle ON to see chart with INPUT defaults instead of presets. Visual confirmation that presets are working.")
+symbolPreset = input.string("Auto-detect", "Preset", options=["Auto-detect", "AAPL", "MSFT", "NVDA", "META", "AMZN", "GOOGL", "TSLA", "Custom"], group=grpPresets, tooltip = "Auto-detect matches the chart symbol")
+
+// ========================================
+// SYMBOL PRESET SYSTEM - FIXED WITH SWITCH STATEMENTS
+// ========================================
+
+// 1. Symbol detection FIRST
+autoSymbol = syminfo.ticker
+presetSymbol = symbolPreset == "Auto-detect" ? autoSymbol :
+               symbolPreset == "Custom" ? "CUSTOM" : symbolPreset
+
+// 2. Lock symbol at barstate.isfirst (for consistency)
+var string presetSymbolSimple = ""
+if barstate.isfirst
+    presetSymbolSimple := presetSymbol
+
+// 3. Create maps for NON-LENGTH parameters (these work fine as series)
+var map<string, int>    mapWAEsens   = map.new<string, int>()
+var map<string, float>  mapVolThresh = map.new<string, float>()
+var map<string, float>  mapVFLow     = map.new<string, float>()
+var map<string, float>  mapVFHigh    = map.new<string, float>()
+var map<string, float>  mapVFExtreme = map.new<string, float>()
+var map<string, float>  mapBELow     = map.new<string, float>()
+var map<string, float>  mapBENormal  = map.new<string, float>()
+var map<string, float>  mapBEHigh    = map.new<string, float>()
+var map<string, int>    mapWAEdeadzone = map.new<string, int>()
+var map<string, bool>   mapSSLexit = map.new<string, bool>()
+var map<string, float>  mapVWAPweight = map.new<string, float>()
+var map<string, float>  mapHODweight = map.new<string, float>()
+var map<string, float>  mapCamWeight = map.new<string, float>()
+var map<string, float>  mapWeeklyWeight = map.new<string, float>()
+var map<string, float>  mapProxTouch = map.new<string, float>()
+var map<string, float>  mapProxNear = map.new<string, float>()
+var map<string, int>    mapORBperiod = map.new<string, int>()
+var map<string, float>  mapORBextension = map.new<string, float>()
+var map<string, float>  mapFirstHourMult = map.new<string, float>()
+var map<string, float>  mapPowerHourMult = map.new<string, float>()
+
+// Keep these maps for hasPreset check and display
+var map<string, int>    mapSSLbase   = map.new<string, int>()
+var map<string, int>    mapSSLlen    = map.new<string, int>()
+var map<string, int>    mapExitLen   = map.new<string, int>()
+
+// ========== OPTIMIZER MAP DECLARATIONS (synced with ORB v70) ==========
+var map<string, float>  mapBERR            = map.new<string, float>()
+var map<string, float>  mapProfitTarget    = map.new<string, float>()
+var map<string, float>  mapTrailDist       = map.new<string, float>()
+var map<string, float>  mapEmaTightenZone  = map.new<string, float>()
+var map<string, float>  mapTightTrailDist  = map.new<string, float>()
+var map<string, float>  mapATRStopMult     = map.new<string, float>()
+var map<string, float>  mapMinStopATR      = map.new<string, float>()
+var map<string, float>  mapVWAPStopDist    = map.new<string, float>()
+var map<string, float>  mapMinRR           = map.new<string, float>()
+var map<string, float>  mapMaxTargetATR    = map.new<string, float>()
+var map<string, float>  mapSwingBuffer     = map.new<string, float>()
+var map<string, bool>   mapSkipLowVolC     = map.new<string, bool>()
+var map<string, float>  mapLowVolMinRR     = map.new<string, float>()
+var map<string, bool>   mapEmaExit         = map.new<string, bool>()
+var map<string, bool>   mapAdaptiveBE      = map.new<string, bool>()
+var map<string, bool>   mapAggressiveTrail = map.new<string, bool>()
+
+// =====================================================
+// 3a. Create maps for CAM LEVEL BEHAVIOR (NON-LENGTH)
+// =====================================================
+
+// ---- R4 Behavior ----
+var map<string, float> mapCamBreakR4 = map.new<string, float>()
+var map<string, float> mapCamRevR4   = map.new<string, float>()
+var map<string, float> mapCamExtR4   = map.new<string, float>()
+var map<string, int>   mapCamStateR4 = map.new<string, int>()
+
+// ---- S4 Behavior ----
+var map<string, float> mapCamBreakS4 = map.new<string, float>()
+var map<string, float> mapCamRevS4   = map.new<string, float>()
+var map<string, float> mapCamExtS4   = map.new<string, float>()
+var map<string, int>   mapCamStateS4 = map.new<string, int>()
+
+// CAM STATE ENUM
+// 0 = TRAVERSE
+// 1 = TREND_BREAK
+// 2 = EXHAUSTION
+// 3 = CONFLICT
+
+// =====================================================
+// CAM BEHAVIOR – SYMBOL LOOKUP (PHASE 1)
+// =====================================================
+camBreakR4 = mapCamBreakR4.contains(syminfo.ticker) ? mapCamBreakR4.get(syminfo.ticker) : na
+camRevR4   = mapCamRevR4.contains(syminfo.ticker)   ? mapCamRevR4.get(syminfo.ticker)   : na
+camExtR4   = mapCamExtR4.contains(syminfo.ticker)   ? mapCamExtR4.get(syminfo.ticker)   : na
+camStateR4 = mapCamStateR4.contains(syminfo.ticker) ? mapCamStateR4.get(syminfo.ticker) : 3
+
+camBreakS4 = mapCamBreakS4.contains(syminfo.ticker) ? mapCamBreakS4.get(syminfo.ticker) : na
+camRevS4   = mapCamRevS4.contains(syminfo.ticker)   ? mapCamRevS4.get(syminfo.ticker)   : na
+camExtS4   = mapCamExtS4.contains(syminfo.ticker)   ? mapCamExtS4.get(syminfo.ticker)   : na
+camStateS4 = mapCamStateS4.contains(syminfo.ticker) ? mapCamStateS4.get(syminfo.ticker) : 3
+
+
+
+// 4. Populate presets (switches at script scope, maps in barstate.isfirst)
+// ===== PRESET_BLOCK_START_7X9Q2 =====
+// AUTO-GENERATED: 2025-12-29 07:18
+// Generator: Enhanced Preset Generator v4.2 (DUAL TIMEFRAMES)
+// Script Type: HMM (Full Parameters)
+// Symbols: AAPL, NVDA, AMD, GOOGL, AMZN, META, MSFT, NFLX, ORCL, PLTR, TSLA, NKE, INTC, ASTS, OKLO, RGTI
+// DO NOT EDIT BETWEEN MARKERS
+
+// ========== SWITCH-BASED LENGTH PARAMETERS ==========
+
+sslBaselineLengthEff = switch
+    not useSymbolPresets => sslBaselineLength
+    syminfo.ticker == "AAPL" => 20
+    syminfo.ticker == "NVDA" => 20
+    syminfo.ticker == "AMD" => 60
+    syminfo.ticker == "GOOGL" => 60
+    syminfo.ticker == "AMZN" => 50
+    syminfo.ticker == "META" => 60
+    syminfo.ticker == "MSFT" => 60
+    syminfo.ticker == "NFLX" => 60
+    syminfo.ticker == "ORCL" => 20
+    syminfo.ticker == "PLTR" => 20
+    syminfo.ticker == "TSLA" => 40
+    syminfo.ticker == "NKE" => 20
+    syminfo.ticker == "INTC" => 20
+    syminfo.ticker == "ASTS" => 20
+    syminfo.ticker == "OKLO" => 30
+    syminfo.ticker == "RGTI" => 60
+    => sslBaselineLength
+
+waeFastEMAEff = switch
+    not useSymbolPresets => waeFastEMA
+    syminfo.ticker == "AAPL" => 22
+    syminfo.ticker == "NVDA" => 17
+    syminfo.ticker == "AMD" => 14
+    syminfo.ticker == "GOOGL" => 17
+    syminfo.ticker == "AMZN" => 21
+    syminfo.ticker == "META" => 17
+    syminfo.ticker == "MSFT" => 21
+    syminfo.ticker == "NFLX" => 17
+    syminfo.ticker == "ORCL" => 13
+    syminfo.ticker == "PLTR" => 14
+    syminfo.ticker == "TSLA" => 14
+    syminfo.ticker == "NKE" => 14
+    syminfo.ticker == "INTC" => 14
+    syminfo.ticker == "ASTS" => 12
+    syminfo.ticker == "OKLO" => 12
+    syminfo.ticker == "RGTI" => 12
+    => waeFastEMA
+
+waeSlowEMAEff = switch
+    not useSymbolPresets => waeSlowEMA
+    syminfo.ticker == "AAPL" => 44
+    syminfo.ticker == "NVDA" => 35
+    syminfo.ticker == "AMD" => 29
+    syminfo.ticker == "GOOGL" => 35
+    syminfo.ticker == "AMZN" => 43
+    syminfo.ticker == "META" => 35
+    syminfo.ticker == "MSFT" => 43
+    syminfo.ticker == "NFLX" => 35
+    syminfo.ticker == "ORCL" => 27
+    syminfo.ticker == "PLTR" => 29
+    syminfo.ticker == "TSLA" => 29
+    syminfo.ticker == "NKE" => 28
+    syminfo.ticker == "INTC" => 28
+    syminfo.ticker == "ASTS" => 26
+    syminfo.ticker == "OKLO" => 26
+    syminfo.ticker == "RGTI" => 26
+    => waeSlowEMA
+
+waeBBLengthEff = switch
+    not useSymbolPresets => waeBBLength
+    syminfo.ticker == "AAPL" => 22
+    syminfo.ticker == "NVDA" => 20
+    syminfo.ticker == "AMD" => 20
+    syminfo.ticker == "GOOGL" => 20
+    syminfo.ticker == "AMZN" => 22
+    syminfo.ticker == "META" => 20
+    syminfo.ticker == "MSFT" => 22
+    syminfo.ticker == "NFLX" => 20
+    syminfo.ticker == "ORCL" => 20
+    syminfo.ticker == "PLTR" => 20
+    syminfo.ticker == "TSLA" => 20
+    syminfo.ticker == "NKE" => 20
+    syminfo.ticker == "INTC" => 20
+    syminfo.ticker == "ASTS" => 20
+    syminfo.ticker == "OKLO" => 20
+    syminfo.ticker == "RGTI" => 20
+    => waeBBLength
+
+qqeRSI1LengthEff = switch
+    not useSymbolPresets => qqeRSI1Length
+    syminfo.ticker == "AAPL" => 10
+    syminfo.ticker == "NVDA" => 9
+    syminfo.ticker == "AMD" => 8
+    syminfo.ticker == "GOOGL" => 9
+    syminfo.ticker == "AMZN" => 10
+    syminfo.ticker == "META" => 9
+    syminfo.ticker == "MSFT" => 10
+    syminfo.ticker == "NFLX" => 9
+    syminfo.ticker == "ORCL" => 8
+    syminfo.ticker == "PLTR" => 8
+    syminfo.ticker == "TSLA" => 8
+    syminfo.ticker == "NKE" => 8
+    syminfo.ticker == "INTC" => 8
+    syminfo.ticker == "ASTS" => 8
+    syminfo.ticker == "OKLO" => 8
+    syminfo.ticker == "RGTI" => 8
+    => qqeRSI1Length
+
+qqeRSI1SmoothingEff = switch
+    not useSymbolPresets => qqeRSI1Smoothing
+    syminfo.ticker == "AAPL" => 6
+    syminfo.ticker == "NVDA" => 5
+    syminfo.ticker == "AMD" => 5
+    syminfo.ticker == "GOOGL" => 5
+    syminfo.ticker == "AMZN" => 6
+    syminfo.ticker == "META" => 5
+    syminfo.ticker == "MSFT" => 6
+    syminfo.ticker == "NFLX" => 5
+    syminfo.ticker == "ORCL" => 5
+    syminfo.ticker == "PLTR" => 5
+    syminfo.ticker == "TSLA" => 5
+    syminfo.ticker == "NKE" => 5
+    syminfo.ticker == "INTC" => 5
+    syminfo.ticker == "ASTS" => 5
+    syminfo.ticker == "OKLO" => 5
+    syminfo.ticker == "RGTI" => 5
+    => qqeRSI1Smoothing
+
+qqeRSI2LengthEff = switch
+    not useSymbolPresets => qqeRSI2Length
+    syminfo.ticker == "AAPL" => 5
+    syminfo.ticker == "NVDA" => 4
+    syminfo.ticker == "AMD" => 4
+    syminfo.ticker == "GOOGL" => 4
+    syminfo.ticker == "AMZN" => 5
+    syminfo.ticker == "META" => 4
+    syminfo.ticker == "MSFT" => 5
+    syminfo.ticker == "NFLX" => 4
+    syminfo.ticker == "ORCL" => 4
+    syminfo.ticker == "PLTR" => 4
+    syminfo.ticker == "TSLA" => 4
+    syminfo.ticker == "NKE" => 4
+    syminfo.ticker == "INTC" => 4
+    syminfo.ticker == "ASTS" => 4
+    syminfo.ticker == "OKLO" => 4
+    syminfo.ticker == "RGTI" => 4
+    => qqeRSI2Length
+
+qqeRSI2SmoothingEff = switch
+    not useSymbolPresets => qqeRSI2Smoothing
+    syminfo.ticker == "AAPL" => 5
+    syminfo.ticker == "NVDA" => 4
+    syminfo.ticker == "AMD" => 4
+    syminfo.ticker == "GOOGL" => 4
+    syminfo.ticker == "AMZN" => 5
+    syminfo.ticker == "META" => 4
+    syminfo.ticker == "MSFT" => 5
+    syminfo.ticker == "NFLX" => 4
+    syminfo.ticker == "ORCL" => 4
+    syminfo.ticker == "PLTR" => 4
+    syminfo.ticker == "TSLA" => 4
+    syminfo.ticker == "NKE" => 4
+    syminfo.ticker == "INTC" => 4
+    syminfo.ticker == "ASTS" => 4
+    syminfo.ticker == "OKLO" => 4
+    syminfo.ticker == "RGTI" => 4
+    => qqeRSI2Smoothing
+
+qqeBBLengthEff = switch
+    not useSymbolPresets => qqeBBLength
+    syminfo.ticker == "AAPL" => 26
+    syminfo.ticker == "NVDA" => 25
+    syminfo.ticker == "AMD" => 25
+    syminfo.ticker == "GOOGL" => 25
+    syminfo.ticker == "AMZN" => 26
+    syminfo.ticker == "META" => 25
+    syminfo.ticker == "MSFT" => 26
+    syminfo.ticker == "NFLX" => 25
+    syminfo.ticker == "ORCL" => 25
+    syminfo.ticker == "PLTR" => 25
+    syminfo.ticker == "TSLA" => 25
+    syminfo.ticker == "NKE" => 25
+    syminfo.ticker == "INTC" => 25
+    syminfo.ticker == "ASTS" => 25
+    syminfo.ticker == "OKLO" => 25
+    syminfo.ticker == "RGTI" => 25
+    => qqeBBLength
+
+volLookbackBarsEff = switch
+    not useSymbolPresets => volLookbackBars
+    syminfo.ticker == "AAPL" => 16
+    syminfo.ticker == "NVDA" => 13
+    syminfo.ticker == "AMD" => 12
+    syminfo.ticker == "GOOGL" => 13
+    syminfo.ticker == "AMZN" => 16
+    syminfo.ticker == "META" => 13
+    syminfo.ticker == "MSFT" => 16
+    syminfo.ticker == "NFLX" => 13
+    syminfo.ticker == "ORCL" => 12
+    syminfo.ticker == "PLTR" => 12
+    syminfo.ticker == "TSLA" => 12
+    syminfo.ticker == "NKE" => 12
+    syminfo.ticker == "INTC" => 12
+    syminfo.ticker == "ASTS" => 12
+    syminfo.ticker == "OKLO" => 12
+    syminfo.ticker == "RGTI" => 12
+    => volLookbackBars
+
+ibPeriodMinutesEff = switch
+    not useSymbolPresets => ibPeriodMinutes
+    syminfo.ticker == "AAPL" => 60
+    syminfo.ticker == "NVDA" => 55
+    syminfo.ticker == "AMD" => 52
+    syminfo.ticker == "GOOGL" => 55
+    syminfo.ticker == "AMZN" => 60
+    syminfo.ticker == "META" => 55
+    syminfo.ticker == "MSFT" => 60
+    syminfo.ticker == "NFLX" => 55
+    syminfo.ticker == "ORCL" => 52
+    syminfo.ticker == "PLTR" => 52
+    syminfo.ticker == "TSLA" => 52
+    syminfo.ticker == "NKE" => 52
+    syminfo.ticker == "INTC" => 52
+    syminfo.ticker == "ASTS" => 52
+    syminfo.ticker == "OKLO" => 52
+    syminfo.ticker == "RGTI" => 52
+    => ibPeriodMinutes
+
+orbPeriodMinutesEff = switch
+    not useSymbolPresets => 15
+    syminfo.ticker == "AAPL" => 5
+    syminfo.ticker == "NVDA" => 15
+    syminfo.ticker == "AMD" => 15
+    syminfo.ticker == "GOOGL" => 15
+    syminfo.ticker == "AMZN" => 15
+    syminfo.ticker == "META" => 15
+    syminfo.ticker == "MSFT" => 15
+    syminfo.ticker == "NFLX" => 15
+    syminfo.ticker == "ORCL" => 15
+    syminfo.ticker == "PLTR" => 15
+    syminfo.ticker == "TSLA" => 15
+    syminfo.ticker == "NKE" => 15
+    syminfo.ticker == "INTC" => 15
+    syminfo.ticker == "ASTS" => 15
+    syminfo.ticker == "OKLO" => 15
+    syminfo.ticker == "RGTI" => 15
+    => 15
+
+// ========== UNIFORM PARAMETERS (SCOPE-OPTIMIZED) ==========
+// These values are identical across all preset symbols
+// Using ternaries instead of switches saves ~32 scopes
+
+_isPresetSymbol = useSymbolPresets and (syminfo.ticker == "AAPL" or syminfo.ticker == "NVDA" or syminfo.ticker == "AMD" or syminfo.ticker == "GOOGL" or syminfo.ticker == "AMZN" or syminfo.ticker == "META" or syminfo.ticker == "MSFT" or syminfo.ticker == "NFLX" or syminfo.ticker == "ORCL" or syminfo.ticker == "PLTR" or syminfo.ticker == "TSLA" or syminfo.ticker == "NKE" or syminfo.ticker == "INTC" or syminfo.ticker == "ASTS" or syminfo.ticker == "OKLO" or syminfo.ticker == "RGTI")
+
+sslLengthEff = _isPresetSymbol ? 10 : sslLength
+exitLengthEff = _isPresetSymbol ? 10 : exitLength
+
+// ========== MAP-BASED MULTIPLIER PARAMETERS ==========
+
+if barstate.isfirst
+    // AAPL Presets (moderate)
+    mapVFLow.put("AAPL", 0.8)
+    mapVFHigh.put("AAPL", 1.3)
+    mapVFExtreme.put("AAPL", 2.0)
+    mapBELow.put("AAPL", 0.8)
+    mapBENormal.put("AAPL", 0.9)
+    mapBEHigh.put("AAPL", 1.1)
+    mapSSLexit.put("AAPL", false)
+    mapVolThresh.put("AAPL", 1.2)
+    mapWAEsens.put("AAPL", 200)
+    mapVWAPweight.put("AAPL", 2.0)
+    mapHODweight.put("AAPL", 2.5)
+    mapCamWeight.put("AAPL", 4.0)
+    mapWeeklyWeight.put("AAPL", 3.0)
+    mapProxTouch.put("AAPL", 0.023)
+    mapProxNear.put("AAPL", 0.046)
+    mapORBextension.put("AAPL", 1.01)
+    mapFirstHourMult.put("AAPL", 1.5)
+    mapPowerHourMult.put("AAPL", 1.3)
+
+    // NVDA Presets (high_volatile)
+    mapVFLow.put("NVDA", 0.8)
+    mapVFHigh.put("NVDA", 1.3)
+    mapVFExtreme.put("NVDA", 2.0)
+    mapBELow.put("NVDA", 0.8)
+    mapBENormal.put("NVDA", 0.9)
+    mapBEHigh.put("NVDA", 1.1)
+    mapSSLexit.put("NVDA", false)
+    mapVolThresh.put("NVDA", 1.2)
+    mapWAEsens.put("NVDA", 325)
+    mapVWAPweight.put("NVDA", 2.0)
+    mapHODweight.put("NVDA", 2.5)
+    mapCamWeight.put("NVDA", 4.0)
+    mapWeeklyWeight.put("NVDA", 3.0)
+    mapProxTouch.put("NVDA", 0.025)
+    mapProxNear.put("NVDA", 0.05)
+    mapORBextension.put("NVDA", 0.92)
+    mapFirstHourMult.put("NVDA", 1.5)
+    mapPowerHourMult.put("NVDA", 1.0)
+
+    // AMD Presets (ultra_volatile)
+    mapVFLow.put("AMD", 0.8)
+    mapVFHigh.put("AMD", 1.3)
+    mapVFExtreme.put("AMD", 2.0)
+    mapBELow.put("AMD", 0.8)
+    mapBENormal.put("AMD", 0.9)
+    mapBEHigh.put("AMD", 1.1)
+    mapSSLexit.put("AMD", false)
+    mapVolThresh.put("AMD", 1.2)
+    mapWAEsens.put("AMD", 300)
+    mapVWAPweight.put("AMD", 2.0)
+    mapHODweight.put("AMD", 2.5)
+    mapCamWeight.put("AMD", 4.0)
+    mapWeeklyWeight.put("AMD", 2.0)
+    mapProxTouch.put("AMD", 0.038)
+    mapProxNear.put("AMD", 0.076)
+    mapORBextension.put("AMD", 0.81)
+    mapFirstHourMult.put("AMD", 1.5)
+    mapPowerHourMult.put("AMD", 1.0)
+
+    // GOOGL Presets (high_volatile)
+    mapVFLow.put("GOOGL", 0.8)
+    mapVFHigh.put("GOOGL", 1.3)
+    mapVFExtreme.put("GOOGL", 2.0)
+    mapBELow.put("GOOGL", 0.8)
+    mapBENormal.put("GOOGL", 0.9)
+    mapBEHigh.put("GOOGL", 1.1)
+    mapSSLexit.put("GOOGL", false)
+    mapVolThresh.put("GOOGL", 1.2)
+    mapWAEsens.put("GOOGL", 200)
+    mapVWAPweight.put("GOOGL", 2.0)
+    mapHODweight.put("GOOGL", 2.5)
+    mapCamWeight.put("GOOGL", 4.0)
+    mapWeeklyWeight.put("GOOGL", 3.0)
+    mapProxTouch.put("GOOGL", 0.032)
+    mapProxNear.put("GOOGL", 0.064)
+    mapORBextension.put("GOOGL", 1.16)
+    mapFirstHourMult.put("GOOGL", 1.5)
+    mapPowerHourMult.put("GOOGL", 1.0)
+
+    // AMZN Presets (moderate)
+    mapVFLow.put("AMZN", 0.8)
+    mapVFHigh.put("AMZN", 1.3)
+    mapVFExtreme.put("AMZN", 2.0)
+    mapBELow.put("AMZN", 0.8)
+    mapBENormal.put("AMZN", 0.9)
+    mapBEHigh.put("AMZN", 1.1)
+    mapSSLexit.put("AMZN", false)
+    mapVolThresh.put("AMZN", 1.2)
+    mapWAEsens.put("AMZN", 225)
+    mapVWAPweight.put("AMZN", 2.0)
+    mapHODweight.put("AMZN", 2.5)
+    mapCamWeight.put("AMZN", 4.0)
+    mapWeeklyWeight.put("AMZN", 3.0)
+    mapProxTouch.put("AMZN", 0.021)
+    mapProxNear.put("AMZN", 0.041)
+    mapORBextension.put("AMZN", 0.95)
+    mapFirstHourMult.put("AMZN", 1.5)
+    mapPowerHourMult.put("AMZN", 1.0)
+
+    // META Presets (high_volatile)
+    mapVFLow.put("META", 0.8)
+    mapVFHigh.put("META", 1.3)
+    mapVFExtreme.put("META", 2.0)
+    mapBELow.put("META", 0.8)
+    mapBENormal.put("META", 0.9)
+    mapBEHigh.put("META", 1.1)
+    mapSSLexit.put("META", false)
+    mapVolThresh.put("META", 1.2)
+    mapWAEsens.put("META", 325)
+    mapVWAPweight.put("META", 2.0)
+    mapHODweight.put("META", 2.5)
+    mapCamWeight.put("META", 4.0)
+    mapWeeklyWeight.put("META", 2.0)
+    mapProxTouch.put("META", 0.068)
+    mapProxNear.put("META", 0.136)
+    mapORBextension.put("META", 1.14)
+    mapFirstHourMult.put("META", 1.5)
+    mapPowerHourMult.put("META", 1.3)
+
+    // MSFT Presets (moderate)
+    mapVFLow.put("MSFT", 0.8)
+    mapVFHigh.put("MSFT", 1.3)
+    mapVFExtreme.put("MSFT", 2.0)
+    mapBELow.put("MSFT", 0.8)
+    mapBENormal.put("MSFT", 0.9)
+    mapBEHigh.put("MSFT", 1.1)
+    mapSSLexit.put("MSFT", false)
+    mapVolThresh.put("MSFT", 1.2)
+    mapWAEsens.put("MSFT", 325)
+    mapVWAPweight.put("MSFT", 2.0)
+    mapHODweight.put("MSFT", 2.5)
+    mapCamWeight.put("MSFT", 4.0)
+    mapWeeklyWeight.put("MSFT", 2.0)
+    mapProxTouch.put("MSFT", 0.04)
+    mapProxNear.put("MSFT", 0.079)
+    mapORBextension.put("MSFT", 1.52)
+    mapFirstHourMult.put("MSFT", 1.5)
+    mapPowerHourMult.put("MSFT", 1.0)
+
+    // NFLX Presets (high_volatile)
+    mapVFLow.put("NFLX", 0.8)
+    mapVFHigh.put("NFLX", 1.3)
+    mapVFExtreme.put("NFLX", 2.0)
+    mapBELow.put("NFLX", 0.8)
+    mapBENormal.put("NFLX", 0.9)
+    mapBEHigh.put("NFLX", 1.1)
+    mapSSLexit.put("NFLX", false)
+    mapVolThresh.put("NFLX", 1.2)
+    mapWAEsens.put("NFLX", 200)
+    mapVWAPweight.put("NFLX", 2.0)
+    mapHODweight.put("NFLX", 2.5)
+    mapCamWeight.put("NFLX", 4.0)
+    mapWeeklyWeight.put("NFLX", 3.0)
+    mapProxTouch.put("NFLX", 0.013)
+    mapProxNear.put("NFLX", 0.025)
+    mapORBextension.put("NFLX", 1.0)
+    mapFirstHourMult.put("NFLX", 1.5)
+    mapPowerHourMult.put("NFLX", 1.3)
+
+    // ORCL Presets (ultra_volatile)
+    mapVFLow.put("ORCL", 0.8)
+    mapVFHigh.put("ORCL", 1.3)
+    mapVFExtreme.put("ORCL", 2.0)
+    mapBELow.put("ORCL", 0.8)
+    mapBENormal.put("ORCL", 0.9)
+    mapBEHigh.put("ORCL", 1.1)
+    mapSSLexit.put("ORCL", false)
+    mapVolThresh.put("ORCL", 1.3)
+    mapWAEsens.put("ORCL", 300)
+    mapVWAPweight.put("ORCL", 2.0)
+    mapHODweight.put("ORCL", 2.5)
+    mapCamWeight.put("ORCL", 4.0)
+    mapWeeklyWeight.put("ORCL", 2.0)
+    mapProxTouch.put("ORCL", 0.038)
+    mapProxNear.put("ORCL", 0.077)
+    mapORBextension.put("ORCL", 0.98)
+    mapFirstHourMult.put("ORCL", 1.5)
+    mapPowerHourMult.put("ORCL", 1.0)
+
+    // PLTR Presets (ultra_volatile)
+    mapVFLow.put("PLTR", 0.8)
+    mapVFHigh.put("PLTR", 1.3)
+    mapVFExtreme.put("PLTR", 2.0)
+    mapBELow.put("PLTR", 0.8)
+    mapBENormal.put("PLTR", 0.9)
+    mapBEHigh.put("PLTR", 1.1)
+    mapSSLexit.put("PLTR", false)
+    mapVolThresh.put("PLTR", 1.3)
+    mapWAEsens.put("PLTR", 325)
+    mapVWAPweight.put("PLTR", 2.0)
+    mapHODweight.put("PLTR", 2.5)
+    mapCamWeight.put("PLTR", 4.0)
+    mapWeeklyWeight.put("PLTR", 3.0)
+    mapProxTouch.put("PLTR", 0.032)
+    mapProxNear.put("PLTR", 0.063)
+    mapORBextension.put("PLTR", 1.63)
+    mapFirstHourMult.put("PLTR", 1.5)
+    mapPowerHourMult.put("PLTR", 1.3)
+
+    // TSLA Presets (ultra_volatile)
+    mapVFLow.put("TSLA", 0.8)
+    mapVFHigh.put("TSLA", 1.3)
+    mapVFExtreme.put("TSLA", 2.0)
+    mapBELow.put("TSLA", 0.8)
+    mapBENormal.put("TSLA", 0.9)
+    mapBEHigh.put("TSLA", 1.1)
+    mapSSLexit.put("TSLA", false)
+    mapVolThresh.put("TSLA", 1.2)
+    mapWAEsens.put("TSLA", 275)
+    mapVWAPweight.put("TSLA", 2.0)
+    mapHODweight.put("TSLA", 2.5)
+    mapCamWeight.put("TSLA", 4.0)
+    mapWeeklyWeight.put("TSLA", 3.0)
+    mapProxTouch.put("TSLA", 0.081)
+    mapProxNear.put("TSLA", 0.161)
+    mapORBextension.put("TSLA", 1.38)
+    mapFirstHourMult.put("TSLA", 1.5)
+    mapPowerHourMult.put("TSLA", 1.0)
+
+    // NKE Presets (ultra_volatile)
+    mapVFLow.put("NKE", 0.8)
+    mapVFHigh.put("NKE", 1.3)
+    mapVFExtreme.put("NKE", 2.0)
+    mapBELow.put("NKE", 0.8)
+    mapBENormal.put("NKE", 0.9)
+    mapBEHigh.put("NKE", 1.1)
+    mapSSLexit.put("NKE", false)
+    mapVolThresh.put("NKE", 1.3)
+    mapWAEsens.put("NKE", 200)
+    mapVWAPweight.put("NKE", 2.0)
+    mapHODweight.put("NKE", 2.5)
+    mapCamWeight.put("NKE", 4.0)
+    mapWeeklyWeight.put("NKE", 3.0)
+    mapProxTouch.put("NKE", 0.008)
+    mapProxNear.put("NKE", 0.015)
+    mapORBextension.put("NKE", 1.69)
+    mapFirstHourMult.put("NKE", 1.5)
+    mapPowerHourMult.put("NKE", 1.0)
+
+    // INTC Presets (ultra_volatile)
+    mapVFLow.put("INTC", 0.8)
+    mapVFHigh.put("INTC", 1.3)
+    mapVFExtreme.put("INTC", 2.0)
+    mapBELow.put("INTC", 0.8)
+    mapBENormal.put("INTC", 0.9)
+    mapBEHigh.put("INTC", 1.1)
+    mapSSLexit.put("INTC", false)
+    mapVolThresh.put("INTC", 1.3)
+    mapWAEsens.put("INTC", 250)
+    mapVWAPweight.put("INTC", 2.0)
+    mapHODweight.put("INTC", 2.5)
+    mapCamWeight.put("INTC", 4.0)
+    mapWeeklyWeight.put("INTC", 3.0)
+    mapProxTouch.put("INTC", 0.007)
+    mapProxNear.put("INTC", 0.015)
+    mapORBextension.put("INTC", 1.18)
+    mapFirstHourMult.put("INTC", 1.5)
+    mapPowerHourMult.put("INTC", 1.3)
+
+    // ASTS Presets (ultra_volatile)
+    mapVFLow.put("ASTS", 0.8)
+    mapVFHigh.put("ASTS", 1.3)
+    mapVFExtreme.put("ASTS", 2.0)
+    mapBELow.put("ASTS", 0.8)
+    mapBENormal.put("ASTS", 0.9)
+    mapBEHigh.put("ASTS", 1.1)
+    mapSSLexit.put("ASTS", false)
+    mapVolThresh.put("ASTS", 1.4)
+    mapWAEsens.put("ASTS", 300)
+    mapVWAPweight.put("ASTS", 2.0)
+    mapHODweight.put("ASTS", 2.5)
+    mapCamWeight.put("ASTS", 4.0)
+    mapWeeklyWeight.put("ASTS", 3.0)
+    mapProxTouch.put("ASTS", 0.035)
+    mapProxNear.put("ASTS", 0.07)
+    mapORBextension.put("ASTS", 2.95)
+    mapFirstHourMult.put("ASTS", 1.5)
+    mapPowerHourMult.put("ASTS", 1.3)
+
+    // OKLO Presets (ultra_volatile)
+    mapVFLow.put("OKLO", 0.8)
+    mapVFHigh.put("OKLO", 1.3)
+    mapVFExtreme.put("OKLO", 2.0)
+    mapBELow.put("OKLO", 0.8)
+    mapBENormal.put("OKLO", 0.9)
+    mapBEHigh.put("OKLO", 1.1)
+    mapSSLexit.put("OKLO", false)
+    mapVolThresh.put("OKLO", 1.4)
+    mapWAEsens.put("OKLO", 200)
+    mapVWAPweight.put("OKLO", 2.0)
+    mapHODweight.put("OKLO", 2.5)
+    mapCamWeight.put("OKLO", 4.0)
+    mapWeeklyWeight.put("OKLO", 3.0)
+    mapProxTouch.put("OKLO", 0.039)
+    mapProxNear.put("OKLO", 0.079)
+    mapORBextension.put("OKLO", 1.7)
+    mapFirstHourMult.put("OKLO", 1.5)
+    mapPowerHourMult.put("OKLO", 1.3)
+
+    // RGTI Presets (ultra_volatile)
+    mapVFLow.put("RGTI", 0.8)
+    mapVFHigh.put("RGTI", 1.3)
+    mapVFExtreme.put("RGTI", 2.0)
+    mapBELow.put("RGTI", 0.8)
+    mapBENormal.put("RGTI", 0.9)
+    mapBEHigh.put("RGTI", 1.1)
+    mapSSLexit.put("RGTI", false)
+    mapVolThresh.put("RGTI", 1.3)
+    mapWAEsens.put("RGTI", 325)
+    mapVWAPweight.put("RGTI", 2.0)
+    mapHODweight.put("RGTI", 2.5)
+    mapCamWeight.put("RGTI", 4.0)
+    mapWeeklyWeight.put("RGTI", 3.0)
+    mapProxTouch.put("RGTI", 0.011)
+    mapProxNear.put("RGTI", 0.022)
+    mapORBextension.put("RGTI", 2.23)
+    mapFirstHourMult.put("RGTI", 1.5)
+    mapPowerHourMult.put("RGTI", 1.3)
+
+// =====================================================
+// CAM BEHAVIOR PRESETS (AUTO-GENERATED)
+// Generated: 2025-12-29 07:18
+// Lookback: 90 days
+// =====================================================
+
+    // AAPL Cam Behavior
+    // R4: 37 touches, EXHAUSTION
+    // S4: 26 touches, EXHAUSTION
+    mapCamBreakR4.put("AAPL", 0.03)
+    mapCamRevR4.put("AAPL", 0.49)
+    mapCamExtR4.put("AAPL", 1.62)
+    mapCamStateR4.put("AAPL", 2)  // EXHAUSTION
+    mapCamBreakS4.put("AAPL", 0.04)
+    mapCamRevS4.put("AAPL", 0.54)
+    mapCamExtS4.put("AAPL", 1.56)
+    mapCamStateS4.put("AAPL", 2)  // EXHAUSTION
+
+    // NVDA Cam Behavior
+    // R4: 33 touches, EXHAUSTION
+    // S4: 30 touches, CONFLICT
+    mapCamBreakR4.put("NVDA", 0.06)
+    mapCamRevR4.put("NVDA", 0.36)
+    mapCamExtR4.put("NVDA", 1.27)
+    mapCamStateR4.put("NVDA", 2)  // EXHAUSTION
+    mapCamBreakS4.put("NVDA", 0.1)
+    mapCamRevS4.put("NVDA", 0.27)
+    mapCamExtS4.put("NVDA", 1.08)
+    mapCamStateS4.put("NVDA", 3)  // CONFLICT
+
+    // AMD Cam Behavior
+    // R4: 33 touches, CONFLICT
+    // S4: 27 touches, CONFLICT
+    mapCamBreakR4.put("AMD", 0.18)
+    mapCamRevR4.put("AMD", 0.36)
+    mapCamExtR4.put("AMD", 1.2)
+    mapCamStateR4.put("AMD", 3)  // CONFLICT
+    mapCamBreakS4.put("AMD", 0.04)
+    mapCamRevS4.put("AMD", 0.22)
+    mapCamExtS4.put("AMD", 1.09)
+    mapCamStateS4.put("AMD", 3)  // CONFLICT
+
+    // GOOGL Cam Behavior
+    // R4: 32 touches, CONFLICT
+    // S4: 29 touches, EXHAUSTION
+    mapCamBreakR4.put("GOOGL", 0.16)
+    mapCamRevR4.put("GOOGL", 0.28)
+    mapCamExtR4.put("GOOGL", 1.19)
+    mapCamStateR4.put("GOOGL", 3)  // CONFLICT
+    mapCamBreakS4.put("GOOGL", 0.03)
+    mapCamRevS4.put("GOOGL", 0.41)
+    mapCamExtS4.put("GOOGL", 1.69)
+    mapCamStateS4.put("GOOGL", 2)  // EXHAUSTION
+
+    // AMZN Cam Behavior
+    // R4: 30 touches, EXHAUSTION
+    // S4: 32 touches, EXHAUSTION
+    mapCamBreakR4.put("AMZN", 0.07)
+    mapCamRevR4.put("AMZN", 0.3)
+    mapCamExtR4.put("AMZN", 1.36)
+    mapCamStateR4.put("AMZN", 2)  // EXHAUSTION
+    mapCamBreakS4.put("AMZN", 0.03)
+    mapCamRevS4.put("AMZN", 0.41)
+    mapCamExtS4.put("AMZN", 1.45)
+    mapCamStateS4.put("AMZN", 2)  // EXHAUSTION
+
+    // META Cam Behavior
+    // R4: 30 touches, EXHAUSTION
+    // S4: 32 touches, EXHAUSTION
+    mapCamBreakR4.put("META", 0.03)
+    mapCamRevR4.put("META", 0.53)
+    mapCamExtR4.put("META", 1.37)
+    mapCamStateR4.put("META", 2)  // EXHAUSTION
+    mapCamBreakS4.put("META", 0.03)
+    mapCamRevS4.put("META", 0.28)
+    mapCamExtS4.put("META", 4.54)
+    mapCamStateS4.put("META", 2)  // EXHAUSTION
+
+    // MSFT Cam Behavior
+    // R4: 27 touches, CONFLICT
+    // S4: 33 touches, EXHAUSTION
+    mapCamBreakR4.put("MSFT", 0.15)
+    mapCamRevR4.put("MSFT", 0.19)
+    mapCamExtR4.put("MSFT", 1.17)
+    mapCamStateR4.put("MSFT", 3)  // CONFLICT
+    mapCamBreakS4.put("MSFT", 0.09)
+    mapCamRevS4.put("MSFT", 0.36)
+    mapCamExtS4.put("MSFT", 1.52)
+    mapCamStateS4.put("MSFT", 2)  // EXHAUSTION
+
+    // NFLX Cam Behavior
+    // R4: 27 touches, CONFLICT
+    // S4: 29 touches, EXHAUSTION
+    mapCamBreakR4.put("NFLX", 0.11)
+    mapCamRevR4.put("NFLX", 0.3)
+    mapCamExtR4.put("NFLX", 1.21)
+    mapCamStateR4.put("NFLX", 3)  // CONFLICT
+    mapCamBreakS4.put("NFLX", 0.1)
+    mapCamRevS4.put("NFLX", 0.31)
+    mapCamExtS4.put("NFLX", 1.24)
+    mapCamStateS4.put("NFLX", 2)  // EXHAUSTION
+
+    // ORCL Cam Behavior
+    // R4: 33 touches, CONFLICT
+    // S4: 29 touches, CONFLICT
+    mapCamBreakR4.put("ORCL", 0.03)
+    mapCamRevR4.put("ORCL", 0.21)
+    mapCamExtR4.put("ORCL", 1.11)
+    mapCamStateR4.put("ORCL", 3)  // CONFLICT
+    mapCamBreakS4.put("ORCL", 0.1)
+    mapCamRevS4.put("ORCL", 0.1)
+    mapCamExtS4.put("ORCL", 1.43)
+    mapCamStateS4.put("ORCL", 3)  // CONFLICT
+
+    // PLTR Cam Behavior
+    // R4: 28 touches, EXHAUSTION
+    // S4: 27 touches, EXHAUSTION
+    mapCamBreakR4.put("PLTR", 0.04)
+    mapCamRevR4.put("PLTR", 0.25)
+    mapCamExtR4.put("PLTR", 1.05)
+    mapCamStateR4.put("PLTR", 2)  // EXHAUSTION
+    mapCamBreakS4.put("PLTR", 0.15)
+    mapCamRevS4.put("PLTR", 0.41)
+    mapCamExtS4.put("PLTR", 1.39)
+    mapCamStateS4.put("PLTR", 2)  // EXHAUSTION
+
+    // TSLA Cam Behavior
+    // R4: 35 touches, EXHAUSTION
+    // S4: 34 touches, EXHAUSTION
+    mapCamBreakR4.put("TSLA", 0.0)
+    mapCamRevR4.put("TSLA", 0.4)
+    mapCamExtR4.put("TSLA", 0.5)
+    mapCamStateR4.put("TSLA", 2)  // EXHAUSTION
+    mapCamBreakS4.put("TSLA", 0.03)
+    mapCamRevS4.put("TSLA", 0.32)
+    mapCamExtS4.put("TSLA", 1.19)
+    mapCamStateS4.put("TSLA", 2)  // EXHAUSTION
+
+    // NKE Cam Behavior
+    // R4: 31 touches, EXHAUSTION
+    // S4: 27 touches, CONFLICT
+    mapCamBreakR4.put("NKE", 0.1)
+    mapCamRevR4.put("NKE", 0.35)
+    mapCamExtR4.put("NKE", 1.29)
+    mapCamStateR4.put("NKE", 2)  // EXHAUSTION
+    mapCamBreakS4.put("NKE", 0.11)
+    mapCamRevS4.put("NKE", 0.22)
+    mapCamExtS4.put("NKE", 1.18)
+    mapCamStateS4.put("NKE", 3)  // CONFLICT
+
+    // INTC Cam Behavior
+    // R4: 32 touches, EXHAUSTION
+    // S4: 28 touches, CONFLICT
+    mapCamBreakR4.put("INTC", 0.06)
+    mapCamRevR4.put("INTC", 0.44)
+    mapCamExtR4.put("INTC", 1.74)
+    mapCamStateR4.put("INTC", 2)  // EXHAUSTION
+    mapCamBreakS4.put("INTC", 0.11)
+    mapCamRevS4.put("INTC", 0.29)
+    mapCamExtS4.put("INTC", 1.14)
+    mapCamStateS4.put("INTC", 3)  // CONFLICT
+
+    // ASTS Cam Behavior
+    // R4: 37 touches, EXHAUSTION
+    // S4: 26 touches, EXHAUSTION
+    mapCamBreakR4.put("ASTS", 0.11)
+    mapCamRevR4.put("ASTS", 0.32)
+    mapCamExtR4.put("ASTS", 1.39)
+    mapCamStateR4.put("ASTS", 2)  // EXHAUSTION
+    mapCamBreakS4.put("ASTS", 0.04)
+    mapCamRevS4.put("ASTS", 0.35)
+    mapCamExtS4.put("ASTS", 1.05)
+    mapCamStateS4.put("ASTS", 2)  // EXHAUSTION
+
+    // OKLO Cam Behavior
+    // R4: 28 touches, EXHAUSTION
+    // S4: 32 touches, EXHAUSTION
+    mapCamBreakR4.put("OKLO", 0.18)
+    mapCamRevR4.put("OKLO", 0.39)
+    mapCamExtR4.put("OKLO", 1.34)
+    mapCamStateR4.put("OKLO", 2)  // EXHAUSTION
+    mapCamBreakS4.put("OKLO", 0.03)
+    mapCamRevS4.put("OKLO", 0.38)
+    mapCamExtS4.put("OKLO", 1.2)
+    mapCamStateS4.put("OKLO", 2)  // EXHAUSTION
+
+    // RGTI Cam Behavior
+    // R4: 30 touches, CONFLICT
+    // S4: 33 touches, EXHAUSTION
+    mapCamBreakR4.put("RGTI", 0.13)
+    mapCamRevR4.put("RGTI", 0.3)
+    mapCamExtR4.put("RGTI", 1.35)
+    mapCamStateR4.put("RGTI", 3)  // CONFLICT
+    mapCamBreakS4.put("RGTI", 0.0)
+    mapCamRevS4.put("RGTI", 0.36)
+    mapCamExtS4.put("RGTI", 0.5)
+    mapCamStateS4.put("RGTI", 2)  // EXHAUSTION
+
+// ===== PRESET_BLOCK_END_7X9Q2 =====
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ========================================
+// COMPARISON MODE OVERRIDE (survives injection)
+// ========================================
+if presetComparisonMode
+    sslBaselineLengthEff := sslBaselineLength
+    sslLengthEff := sslLength
+    exitLengthEff := exitLength
+    waeFastEMAEff := waeFastEMA
+    waeSlowEMAEff := waeSlowEMA
+    waeBBLengthEff := waeBBLength
+    qqeRSI1LengthEff := qqeRSI1Length
+    qqeRSI1SmoothingEff := qqeRSI1Smoothing
+    qqeRSI2LengthEff := qqeRSI2Length
+    qqeRSI2SmoothingEff := qqeRSI2Smoothing
+    qqeBBLengthEff := qqeBBLength
+    volLookbackBarsEff := volLookbackBars
+    ibPeriodMinutesEff := ibPeriodMinutes
+    orbPeriodMinutesEff := 15
+
+// Check if preset exists (for display and non-length params)
+hasPreset = useSymbolPresets and mapVFLow.contains(presetSymbolSimple)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 7. MAP-BASED RESOLUTION for non-length parameters (series is OK)
+// ════════════════════════════════════════════════════════════════════════════
+
+waeSensitivityEff    = hasPreset ? mapWAEsens.get(presetSymbolSimple) : waeSensitivity
+volumeThresholdEff   = hasPreset ? mapVolThresh.get(presetSymbolSimple) : volumeThreshold
+
+// Multipliers (not length-based, can stay as direct assignments)
+waeBBMultiplierEff  = waeBBMultiplier
+qqeFactor1Eff       = qqeFactor1
+qqeFactor2Eff       = qqeFactor2
+qqeBBMultiplierEff  = qqeBBMultiplier
+
+// ========== OPTIMIZER EFF RESOLUTION (synced with ORB v70) ==========
+breakEvenRREff           = hasPreset and mapBERR.contains(presetSymbolSimple) ? mapBERR.get(presetSymbolSimple) : breakEvenRR
+profitTargetRREff        = hasPreset and mapProfitTarget.contains(presetSymbolSimple) ? mapProfitTarget.get(presetSymbolSimple) : profitTargetRR
+trailingStopDistanceEff  = hasPreset and mapTrailDist.contains(presetSymbolSimple) ? mapTrailDist.get(presetSymbolSimple) : trailingStopDistance
+emaTightenZoneEff        = hasPreset and mapEmaTightenZone.contains(presetSymbolSimple) ? mapEmaTightenZone.get(presetSymbolSimple) : emaTightenZone
+tightenedTrailDistanceEff = hasPreset and mapTightTrailDist.contains(presetSymbolSimple) ? mapTightTrailDist.get(presetSymbolSimple) : tightenedTrailDistance
+atrStopMultiplierEff     = hasPreset and mapATRStopMult.contains(presetSymbolSimple) ? mapATRStopMult.get(presetSymbolSimple) : atrStopMultiplier
+minStopATREff            = hasPreset and mapMinStopATR.contains(presetSymbolSimple) ? mapMinStopATR.get(presetSymbolSimple) : 0.15
+vwapStopDistanceEff      = hasPreset and mapVWAPStopDist.contains(presetSymbolSimple) ? mapVWAPStopDist.get(presetSymbolSimple) : vwapStopDistance
+minAcceptableRREff       = hasPreset and mapMinRR.contains(presetSymbolSimple) ? mapMinRR.get(presetSymbolSimple) : minAcceptableRR
+maxTargetATREff          = hasPreset and mapMaxTargetATR.contains(presetSymbolSimple) ? mapMaxTargetATR.get(presetSymbolSimple) : maxTargetATR
+swingBufferEff           = hasPreset and mapSwingBuffer.contains(presetSymbolSimple) ? mapSwingBuffer.get(presetSymbolSimple) : swingBuffer
+skipLowVolCGradesEff     = hasPreset and mapSkipLowVolC.contains(presetSymbolSimple) ? mapSkipLowVolC.get(presetSymbolSimple) : skipLowVolCGrades
+lowVolMinRREff           = hasPreset and mapLowVolMinRR.contains(presetSymbolSimple) ? mapLowVolMinRR.get(presetSymbolSimple) : lowVolMinRR
+useEmaCrossExitEff       = hasPreset and mapEmaExit.contains(presetSymbolSimple) ? mapEmaExit.get(presetSymbolSimple) : useEmaCrossExit
+useAdaptiveBEEff         = hasPreset and mapAdaptiveBE.contains(presetSymbolSimple) ? mapAdaptiveBE.get(presetSymbolSimple) : useAdaptiveBE
+aggressiveTrailingEff    = hasPreset and mapAggressiveTrail.contains(presetSymbolSimple) ? mapAggressiveTrail.get(presetSymbolSimple) : aggressiveTrailing
+
+// ========================================
+// COMPARISON MODE OVERRIDE — Optimizer params (must be after resolution)
+// ========================================
+if presetComparisonMode
+    breakEvenRREff := breakEvenRR
+    profitTargetRREff := profitTargetRR
+    trailingStopDistanceEff := trailingStopDistance
+    emaTightenZoneEff := emaTightenZone
+    tightenedTrailDistanceEff := tightenedTrailDistance
+    atrStopMultiplierEff := atrStopMultiplier
+    vwapStopDistanceEff := vwapStopDistance
+    minAcceptableRREff := minAcceptableRR
+    maxTargetATREff := maxTargetATR
+    swingBufferEff := swingBuffer
+    skipLowVolCGradesEff := skipLowVolCGrades
+    lowVolMinRREff := lowVolMinRR
+    useEmaCrossExitEff := useEmaCrossExit
+    useAdaptiveBEEff := useAdaptiveBE
+    aggressiveTrailingEff := aggressiveTrailing
+
+// ========================================
+// QQE SIGNAL TRACKING VARIABLES (synced with ORB)
+// ========================================
+var bool qqeBullSignal = false
+var bool qqeBearSignal = false
+var int bullQQEIncreasingCount = 0
+var int bearQQEIncreasingCount = 0
+var float prevBullSignalStrength = 0.0
+var float prevBearSignalStrength = 0.0
+
+// ========================================
+// VOLUME SCORING VARIABLES (synced with ORB)
+// ========================================
+var float volScore = 0.0
+var bool volBullConfirmation = false
+var bool volBearConfirmation = false
+
+// ========================================
+// PROFIT TRACKING VARIABLES
+// ========================================
+var float totalPnL = 0.0
+var int winCount = 0
+var int lossCount = 0
+var float maxWin = 0.0
+var float maxLoss = 0.0
+var float lastTradePnL = 0.0
+var table profitTable = na
+
+// ========================================
+// POSITION STATE VARIABLES
+// ========================================
+
+var int tradeState = 0  // 0=flat, 1=long, -1=short
+
+// Derived from tradeState (recalculated every bar)
+inLongPosition = tradeState == 1
+inShortPosition = tradeState == -1
+isFlat = tradeState == 0
+bool longSignal = false
+bool shortSignal = false
+var int lastEntryBar = na
+var float entryPrice = na
+var float stopPrice = na
+var float targetPrice = na
+var float breakEvenPrice = na
+var int entryBar = na
+var float positionSize = na
+var bool breakEvenActivated = false
+var int tradeCounter = 0
+
+// Trailing Stop State (synced with ORB)
+var bool trailingStopActivated = false
+var float trailingStopLevel = na
+var float initialStopPrice = na  // Store original stop for risk calculation
+
+// EMA Exit Confirmation Counters (synced with ORB)
+var int barsUnderEma = 0
+var int barsOverEma = 0
+var string targetGrade = "D"  // ← ADD THIS LINE HERE
+// Track adaptive values for current trade
+var float lastRRUsed = na
+var float lastTargetATRs = na
+var string lastVolState = na
+var float lastAtrRR = na
+var float lastSwingRR = na
+var float lastVwapRR = na
+var float lastHybridRR = na
+var string lastStopTypeUsed = na
+
+// ========================================
+// TRADE BOX VISUALIZER VARIABLES
+// ========================================
+var box riskBox = na
+var box rewardBox = na
+var line entryLine = na
+var line stopLine = na
+var line targetLine = na
+var label rrLabel = na
+
+// P/L calculation variables
+var float longPnlDollars = na
+var float shortPnlDollars = na
+
+// Position table variable for cleanup
+var table positionTable = na
+// IB Breakout state tracking
+var bool hasIBBreakUp = false
+var bool hasIBBreakDown = false
+
+
+// ========================================
+// INITIAL BALANCE VARIABLES
+// ========================================
+var float ibHigh = na
+var float ibLow = na
+var bool ibFormed = false
+var int tradingDayStart = na
+var line ibHighLine = na
+var line ibLowLine = na
+
+
+// ========================================
+// WEEKLY RESET FOR PROFIT TRACKING
+// ========================================
+isNewWeek = dayofweek == dayofweek.monday and dayofweek[1] != dayofweek.monday
+
+if isNewWeek
+    totalPnL := 0.0
+    winCount := 0
+    lossCount := 0
+    maxWin := 0.0
+    maxLoss := 0.0
+    // Note: keeping lastTradePnL to show previous week's last trade
+
+// ========================================
+// SIMPLE LABEL CLEANUP SYSTEM
+// ========================================
+
+// Track labels in simple arrays
+var array<label> allLabels = array.new<label>()
+
+// Simple function to add and manage labels
+addManagedLabel(x, y, labelText, color, style, textcolor, size) =>
+    // Label creation is mandatory for trade tracking
+    newLabel = label.new(x, y, labelText, color=color, style=style, textcolor=textcolor, size=size)
+    array.push(allLabels, newLabel)
+    
+    // Auto-cleanup: remove old labels beyond our limit
+    if maxHistoricalLabels > 0
+        while array.size(allLabels) > maxHistoricalLabels
+            oldLabel = array.shift(allLabels)
+            if not na(oldLabel)
+                label.delete(oldLabel)
+    
+    // Auto-delete labels older than specified bars
+    if autoDeleteLabels
+        for i = array.size(allLabels) - 1 to 0
+            lbl = array.get(allLabels, i)
+            if not na(lbl)
+                labelAge = bar_index - label.get_x(lbl)
+                if labelAge > labelDeleteAfterBars
+                    label.delete(lbl)
+                    array.remove(allLabels, i)
+    
+    newLabel
+
+
+// ========================================
+// HELPER FUNCTIONS
+// ========================================
+
+// SMOOTHING FUNCTIONS
+
+// Double EMA (DEMA)
+dema(src, length) =>
+    ema1 = ta.ema(src, length)
+    ema2 = ta.ema(ema1, length)
+    2 * ema1 - ema2
+
+// Triple EMA (TEMA)
+tema(src, length) =>
+    ema1 = ta.ema(src, length)
+    ema2 = ta.ema(ema1, length)
+    ema3 = ta.ema(ema2, length)
+    3 * (ema1 - ema2) + ema3
+
+// Ehlers Super Smoother Filter
+superSmoother(src, length) =>
+    cutoff = 1.414 * 3.14159 / length
+    a1 = math.exp(-cutoff)
+    b1 = 2 * a1 * math.cos(1.414 * 3.14159 / length)
+    c2 = b1
+    c3 = -a1 * a1
+    c1 = 1 - c2 - c3
+    var float ss = na
+    ss := c1 * (src + nz(src[1])) / 2 + c2 * nz(ss[1]) + c3 * nz(ss[2])
+    ss
+
+// Gaussian Filter
+gaussian(src, length, sigma) =>
+    weights = array.new_float(0)
+    sumWeights = 0.0
+    for i = 0 to length - 1
+        weight = math.exp(-0.5 * math.pow((i - length / 2) / (sigma * length / 4), 2))
+        array.push(weights, weight)
+        sumWeights += weight
+    
+    sum = 0.0
+    for i = 0 to length - 1
+        if i < bar_index
+            sum += src[i] * array.get(weights, i) / sumWeights
+    sum
+
+// Enhanced JMA function
+jma(src, length) =>
+    momentum = ta.change(src)
+    volatility = ta.atr(length)
+    ratio = volatility != 0 ? momentum / volatility : 0
+    smoothed = ta.ema(src + ratio * volatility, length)
+    smoothed
+
+// Main MA function - PROPER SERIES-SAFE VERSION
+ma(src, length, type) =>
+    _len = int(math.max(length, 1))   // force simple for MA types that require it
+    
+    switch type
+        "SMA"  => ta.sma(src, _len)       // MUST be simple
+        "EMA"  => ta.ema(src, length)     // EMA supports series (use original)
+        "HMA"  => ta.hma(src, _len)       // MUST be simple
+        "WMA"  => ta.wma(src, _len)       // MUST be simple
+        "JMA"  => jma(src, length)        // your function accepts series
+        "DEMA" => dema(src, length)       // accepts series
+        "TEMA" => tema(src, length)       // accepts series
+        => ta.sma(src, _len)              // default fallback
+
+// Apply smoothing to a series
+applySmoother(src, enabled, method, factor) =>
+    if not enabled
+        src
+    else
+        smoothingLength = math.round(factor * 2)
+        switch method
+            "Super Smoother" => superSmoother(src, smoothingLength)
+            "Jurik Filter" => jma(src, smoothingLength)
+            "EMA Post-Smooth" => ta.ema(src, smoothingLength)
+            "Gaussian" => gaussian(src, smoothingLength, factor)
+            => src
+
+getLabelSize() =>
+    switch labelSize
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Normal" => size.normal
+        "Large" => size.large
+        "Huge" => size.huge
+        => size.normal    // Default to normal
+
+getLabelOffset() =>
+    atr = ta.atr(14)
+    atr * (labelOffset / 10.0)
+
+// Function to find swing low during regular trading hours only
+findSwingLowRegularHours(lookback) =>
+    float swingLow = na
+    int validBars = 0
+    
+    // Define regular trading hours (9:30 AM - 4:00 PM ET)
+    regularHours = time(timeframe.period, "0930-1600:1234567", "America/New_York")
+    
+    // Look back through bars to find lowest low during regular hours
+    for i = 1 to lookback * 3  // Look at more bars to ensure we get enough regular hour bars
+        if not na(regularHours[i])  // Only consider bars during regular trading hours
+            if na(swingLow) or low[i] < swingLow
+                swingLow := low[i]
+            validBars += 1
+            if validBars >= lookback  // Once we have enough regular hour bars, stop
+                break
+    
+    // Fallback if not enough regular hour bars found
+    if na(swingLow)
+        swingLow := low[1]
+    
+    swingLow
+
+// Function to find swing high during regular trading hours only
+findSwingHighRegularHours(lookback) =>
+    float swingHigh = na
+    int validBars = 0
+    
+    // Define regular trading hours (9:30 AM - 4:00 PM ET)
+    regularHours = time(timeframe.period, "0930-1600:1234567", "America/New_York")
+    
+    // Look back through bars to find highest high during regular hours
+    for i = 1 to lookback * 3  // Look at more bars to ensure we get enough regular hour bars
+        if not na(regularHours[i])  // Only consider bars during regular trading hours
+            if na(swingHigh) or high[i] > swingHigh
+                swingHigh := high[i]
+            validBars += 1
+            if validBars >= lookback  // Once we have enough regular hour bars, stop
+                break
+    
+    // Fallback if not enough regular hour bars found
+    if na(swingHigh)
+        swingHigh := high[1]
+    
+    swingHigh
+
+calculateStopLoss(isLong, entryPrice, atrValue, vwapVal, stopTypeInput) =>
+    // Minimum stop distance - 15% of ATR
+    float minStopDist = atrValue * 0.15
+    
+    // ATR stop (always valid)
+    atrStop = isLong ? entryPrice - (atrValue * atrStopMultiplierEff) : entryPrice + (atrValue * atrStopMultiplierEff)
+    
+    // Swing stop - validate minimum distance
+    swingLow = findSwingLowRegularHours(swingLookback)
+    swingHigh = findSwingHighRegularHours(swingLookback)
+    float swingStopCalc = isLong ? swingLow - (atrValue * swingBufferEff) : swingHigh + (atrValue * swingBufferEff)
+    bool swingValid = isLong ? (swingStopCalc < entryPrice - minStopDist) : (swingStopCalc > entryPrice + minStopDist)
+    float swingStop = swingValid ? swingStopCalc : atrStop
+    
+    // VWAP stop - validate side AND minimum distance
+    bool vwapSideValid = isLong ? (vwapVal < entryPrice) : (vwapVal > entryPrice)
+    float vwapStopCalc = isLong ? vwapVal - (atrValue * vwapStopDistanceEff) : vwapVal + (atrValue * vwapStopDistanceEff)
+    bool vwapDistValid = isLong ? (vwapStopCalc < entryPrice - minStopDist) : (vwapStopCalc > entryPrice + minStopDist)
+    float vwapStop = (vwapSideValid and vwapDistValid) ? vwapStopCalc : na
+
+    // Manual stop - fixed point distance from entry
+    float manualStop = isLong ? entryPrice - manualStopPoints : entryPrice + manualStopPoints
+
+    // Use the stop type passed in for this trade
+    _typeToUse = stopTypeInput
+
+    // Select stop based on type - with validity fallbacks
+    selectedStop = switch _typeToUse
+        "ATR" => atrStop
+        "Swing" => swingValid ? swingStop : atrStop
+        "VWAP" => na(vwapStop) ? atrStop : vwapStop
+        "Manual" => manualStop
+        "Hybrid" => isLong ? (hybridExcludeVwap ? math.max(atrStop, swingValid ? swingStop : atrStop) : math.max(atrStop, math.max(swingValid ? swingStop : atrStop, na(vwapStop) ? atrStop : vwapStop))) : (hybridExcludeVwap ? math.min(atrStop, swingValid ? swingStop : atrStop) : math.min(atrStop, math.min(swingValid ? swingStop : atrStop, na(vwapStop) ? atrStop : vwapStop)))
+        => atrStop
+
+    // Determine stop type label for display using ternaries
+    stopTypeLabel = _typeToUse == "Swing" and not swingValid ? "ATR-Fallback" : (_typeToUse == "VWAP" and na(vwapStop) ? "ATR-Fallback" : (_typeToUse == "Hybrid" ? (selectedStop == atrStop ? "Hybrid-ATR" : (selectedStop == swingStop ? "Hybrid-Swing" : "Hybrid-VWAP")) : _typeToUse))
+
+    [selectedStop, stopTypeLabel]
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MULTI-STOP EVALUATOR - Returns best stop based on R:R
+// ══════════════════════════════════════════════════════════════════════════════
+evaluateBestStop(bool isLong, float entryPrice, float atrValue, float vwapVal, float rrTarget, float maxTargetATRs, float minRR) =>
+    // Calculate all four stop types
+    [atrStop, atrType] = calculateStopLoss(isLong, entryPrice, atrValue, vwapVal, "ATR")
+    [swingStop, swingType] = calculateStopLoss(isLong, entryPrice, atrValue, vwapVal, "Swing")
+    [vwapStop, vwapType] = calculateStopLoss(isLong, entryPrice, atrValue, vwapVal, "VWAP")
+    [hybridStop, hybridType] = calculateStopLoss(isLong, entryPrice, atrValue, vwapVal, "Hybrid")
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // STOP VALIDITY CHECKS - Reject stops that are invalid or micro-sized
+    // ═══════════════════════════════════════════════════════════════════════
+    float minStopDist = atrValue * 0.15  // Minimum 15% of ATR
+    
+    bool atrValid = isLong ? (atrStop < entryPrice - minStopDist) : (atrStop > entryPrice + minStopDist)
+    bool swingValid = isLong ? (swingStop < entryPrice - minStopDist) : (swingStop > entryPrice + minStopDist)
+    bool vwapSideOK = isLong ? (vwapVal < entryPrice) : (vwapVal > entryPrice)
+    bool vwapValid = vwapSideOK and not na(vwapStop) and (isLong ? (vwapStop < entryPrice - minStopDist) : (vwapStop > entryPrice + minStopDist))
+    bool hybridValid = isLong ? (hybridStop < entryPrice - minStopDist) : (hybridStop > entryPrice + minStopDist)
+    
+    // Calculate risk per share for each (only for valid stops)
+    float atrRisk = atrValid ? math.abs(entryPrice - atrStop) : na
+    float swingRisk = swingValid ? math.abs(entryPrice - swingStop) : na
+    float vwapRisk = vwapValid ? math.abs(entryPrice - vwapStop) : na
+    float hybridRisk = hybridValid ? math.abs(entryPrice - hybridStop) : na
+    
+    // Calculate target for each based on desired R:R
+    float atrTarget = isLong ? entryPrice + (nz(atrRisk) * rrTarget) : entryPrice - (nz(atrRisk) * rrTarget)
+    float swingTarget = isLong ? entryPrice + (nz(swingRisk) * rrTarget) : entryPrice - (nz(swingRisk) * rrTarget)
+    float vwapTarget = isLong ? entryPrice + (nz(vwapRisk) * rrTarget) : entryPrice - (nz(vwapRisk) * rrTarget)
+    float hybridTarget = isLong ? entryPrice + (nz(hybridRisk) * rrTarget) : entryPrice - (nz(hybridRisk) * rrTarget)
+    
+    // Calculate target distance in ATRs
+    float atrTargetATRs = atrValid ? math.abs(atrTarget - entryPrice) / atrValue : 999
+    float swingTargetATRs = swingValid ? math.abs(swingTarget - entryPrice) / atrValue : 999
+    float vwapTargetATRs = vwapValid ? math.abs(vwapTarget - entryPrice) / atrValue : 999
+    float hybridTargetATRs = hybridValid ? math.abs(hybridTarget - entryPrice) / atrValue : 999
+    
+    // Calculate achievable R:R for each (capped at maxTargetATRs) - invalid stops get -1
+    float atrBestRR = atrValid ? (atrTargetATRs <= maxTargetATRs ? rrTarget : (atrRisk > 0 ? (maxTargetATRs * atrValue) / atrRisk : 0)) : -1
+    float swingBestRR = swingValid ? (swingTargetATRs <= maxTargetATRs ? rrTarget : (swingRisk > 0 ? (maxTargetATRs * atrValue) / swingRisk : 0)) : -1
+    float vwapBestRR = vwapValid ? (vwapTargetATRs <= maxTargetATRs ? rrTarget : (vwapRisk > 0 ? (maxTargetATRs * atrValue) / vwapRisk : 0)) : -1
+    float hybridBestRR = hybridValid ? (hybridTargetATRs <= maxTargetATRs ? rrTarget : (hybridRisk > 0 ? (maxTargetATRs * atrValue) / hybridRisk : 0)) : -1
+    
+    // Find the best R:R among VALID methods only
+    float bestRR = math.max(math.max(atrBestRR, swingBestRR), math.max(vwapBestRR, hybridBestRR))
+    
+    // Determine which stop type won (default to ATR)
+    float selectedStop = atrStop
+    string selectedType = atrType
+    float selectedRR = atrBestRR > 0 ? atrBestRR : rrTarget
+    
+    if bestRR == swingBestRR and swingValid and swingBestRR >= minRR
+        selectedStop := swingStop
+        selectedType := swingType
+        selectedRR := swingBestRR
+    else if bestRR == vwapBestRR and vwapValid and vwapBestRR >= minRR
+        selectedStop := vwapStop
+        selectedType := vwapType
+        selectedRR := vwapBestRR
+    else if bestRR == hybridBestRR and hybridValid and hybridBestRR >= minRR
+        selectedStop := hybridStop
+        selectedType := hybridType
+        selectedRR := hybridBestRR
+    else if atrValid and atrBestRR >= minRR
+        selectedStop := atrStop
+        selectedType := atrType
+        selectedRR := atrBestRR
+    
+    // Return: stop price, stop type name, best achievable R:R, and all four R:Rs for display
+    // Invalid stops return -1 for R:R so table can show "invalid"
+    [selectedStop, selectedType, selectedRR, atrBestRR > 0 ? atrBestRR : rrTarget, swingBestRR, vwapBestRR, hybridBestRR]
+
+// ========================================
+// TRAFFIC LIGHT COLOR FUNCTION
+// ========================================
+f_trafficLightColor(float qScore, string rrGrade, string vState) =>
+    // Bright Green: All systems go - high confluence, good R:R, active tape
+    if qScore >= 3 and (rrGrade == "A" or rrGrade == "B") and (vState == "NORMAL" or vState == "HIGH" or vState == "EXTREME")
+        color.new(#00FF00, 0)  // Bright green
+    // Green: Good R:R in quiet tape, OR C-grade in hot tape
+    else if qScore >= 3 and (rrGrade == "A" or rrGrade == "B")
+        color.new(color.green, 0)  // A/B grade in LOW vol still acceptable
+    else if qScore >= 3 and rrGrade == "C" and (vState == "HIGH" or vState == "EXTREME")
+        color.new(color.green, 0)  // C grade needs hot tape to compensate
+    // Orange: C-grade in quiet/normal tape - marginal
+    else if qScore >= minConfluenceScore
+        color.new(color.orange, 0)
+    // Red: Below minimum
+    else
+        color.new(color.red, 0)
+
+// ========================================
+// CALCULATIONS
+// ========================================
+
+// Market hours and quality filters
+inMarketHours = not useMarketHours or (time(timeframe.period, marketSession, "America/New_York") != 0)
+inEntryWindow = time(timeframe.period, earliestEntryTime, "America/New_York") != 0
+
+// Market close detection (4:00 PM ET) - Exit all positions by close
+currentHour = hour(time, "America/New_York")
+currentMinute = minute(time, "America/New_York")
+isMarketClose = (currentHour == 16 and currentMinute == 0) or (currentHour == 15 and currentMinute >= 55)
+
+// ========================================
+// INITIAL BALANCE CALCULATION
+// ========================================
+// Reset at market open
+if hour(time, "America/New_York") == 9 and minute(time, "America/New_York") == 30
+    ibHigh := high
+    ibLow := low
+    ibFormed := false
+    tradingDayStart := time
+    // Delete old IB lines
+    if not na(ibHighLine)
+        line.delete(ibHighLine)
+    if not na(ibLowLine)
+        line.delete(ibLowLine)
+
+// Track IB formation (using preset period)
+if not ibFormed and not na(tradingDayStart)
+    minutesSinceOpen = (time - tradingDayStart) / 60000
+    if minutesSinceOpen <= ibPeriodMinutesEff
+        ibHigh := math.max(ibHigh, high)
+        ibLow := math.min(ibLow, low)
+    else if minutesSinceOpen > ibPeriodMinutesEff
+        ibFormed := true
+
+// Draw and update IB lines
+if ibFormed and showIBLevels
+    // Convert line style string to Pine Script line style
+    lineStyleToUse = switch ibLineStyle
+        "Solid" => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_dashed
+    
+    // Delete old lines and create new ones extending from IB completion
+    if na(ibHighLine)
+        ibHighLine := line.new(bar_index - 30, ibHigh, bar_index + 100, ibHigh, color=ibHighColor, width=ibLineWidth, style=lineStyleToUse)
+        ibLowLine := line.new(bar_index - 30, ibLow, bar_index + 100, ibLow, color=ibLowColor, width=ibLineWidth, style=lineStyleToUse)
+    else
+        // Keep extending the lines to the right
+        line.set_x2(ibHighLine, bar_index + 100)
+        line.set_x2(ibLowLine, bar_index + 100)
+
+
+// Update IB lines position
+if ibFormed and showIBLevels
+    if not na(ibHighLine)
+        line.set_x2(ibHighLine, bar_index + 100)
+    if not na(ibLowLine)
+        line.set_x2(ibLowLine, bar_index + 100)
+
+
+// Lunch hour filter
+lunchSession = time(timeframe.period, "1130-1330", "America/New_York")
+inLunchHour = avoidLunchHour and (lunchSession != 0)
+
+// ATR CALCULATION (RTH-ONLY — synced with ORB v69)
+// Uses Regular Trading Hours data only, even on ETH charts
+// Prevents pre-market gaps from inflating stop calculations
+rthTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.regular)
+float rthATR = request.security(rthTicker, timeframe.period, ta.rma(ta.tr(true), 14), barmerge.gaps_off, barmerge.lookahead_off)
+
+// Persist last valid RTH ATR during pre-market
+var float lastValidRthATR = na
+if not na(rthATR)
+    lastValidRthATR := rthATR
+
+// Use RTH ATR when available, otherwise last known RTH, otherwise fallback to standard
+float standardATR = ta.atr(14)
+atr = not na(rthATR) ? rthATR : (not na(lastValidRthATR) ? lastValidRthATR : standardATR)
+
+// Check if volatility is increasing relative to recent bars
+recentRange = ta.highest(high, 5) - ta.lowest(low, 5)  // Last 5 bars range
+priorRange = ta.highest(high[5], 5) - ta.lowest(low[5], 5)  // Previous 5 bars before that
+
+// Normalize by price
+recentRangePct = recentRange / close
+priorRangePct = priorRange / close[5]
+
+// Volatility is accelerating if recent range exceeds prior range
+volatilityAccelerating = recentRangePct > priorRangePct * 1.2  // 20% increase shows acceleration
+
+// Also keep a minimum threshold as fallback
+atrPct = atr / close
+atrPctAvg = ta.sma(atrPct, 20)
+minAcceptableVolatility = atrPct >= atrPctAvg * 0.8  // 80% of average is acceptable
+
+// Final condition: Either accelerating OR meets minimum threshold
+volatilityCondition = not useVolatilityFilter or volatilityAccelerating or minAcceptableVolatility
+
+// ========================================
+// ADAPTIVE VOLATILITY ENGINE (Dual-Timeframe — synced with ORB v70)
+// Session-level: first 30-min baseline vs current fast ATR
+// Daily-level: today's daily ATR vs 20-day average
+// Combined: sessionVF × htfVF = volFactor
+// ========================================
+var float volFactor = na
+var string volState = "NORMAL"
+
+// === Session-Level Component ===
+bool volNewDay = ta.change(time("D")) != 0
+bool isFirstHalfHour = not na(time(timeframe.period, "0930-1000", "America/New_York"))
+
+float orbATR_fast = ta.atr(fastAtrLength)
+float orbATR_slow = ta.sma(orbATR_fast, 10)
+orbATR_slow := na(orbATR_slow) ? orbATR_fast : orbATR_slow
+
+var float sessionBaseline = na
+if volNewDay
+    sessionBaseline := na
+if isFirstHalfHour
+    sessionBaseline := na(sessionBaseline) ? orbATR_slow : 0.9 * sessionBaseline + 0.1 * orbATR_slow
+
+float sessionVF = not na(sessionBaseline) and sessionBaseline > 0 ? orbATR_fast / sessionBaseline : 1.0
+
+// === Daily-Level Component ===
+float dailyATR = request.security(syminfo.tickerid, "D", ta.atr(14))
+float dailyATRslow = request.security(syminfo.tickerid, "D", ta.sma(ta.atr(14), 20))
+float htfVF = not na(dailyATRslow) and dailyATRslow > 0 ? dailyATR / dailyATRslow : 1.0
+
+// === Combined Factor ===
+volFactor := sessionVF * htfVF
+// Get dynamic thresholds for this symbol
+lowVolThresholdEff = hasPreset and mapVFLow.contains(presetSymbolSimple) ? mapVFLow.get(presetSymbolSimple) : lowVolThreshold
+highVolThresholdEff = hasPreset and mapVFHigh.contains(presetSymbolSimple) ? mapVFHigh.get(presetSymbolSimple) : highVolThreshold
+extremeVolThresholdEff = hasPreset and mapVFExtreme.contains(presetSymbolSimple) ? mapVFExtreme.get(presetSymbolSimple) : extremeVolThreshold
+
+// Classify volatility regime
+if not na(volFactor)
+    if volFactor < lowVolThresholdEff      // Changed
+        volState := "LOW"
+    else if volFactor < highVolThresholdEff   // Changed
+        volState := "NORMAL"
+    else if volFactor < extremeVolThresholdEff  // Changed
+        volState := "HIGH"
+    else
+        volState := "EXTREME"
+// Calculate IB buffer based on selected type
+ibBufferHigh = 0.0
+ibBufferLow = 0.0
+
+if ibBufferType == "Fixed"
+    ibBufferHigh := ibBufferFixed
+    ibBufferLow := ibBufferFixed
+else if ibBufferType == "ATR"
+    ibBufferHigh := atr * ibBufferATR
+    ibBufferLow := atr * ibBufferATR
+else if ibBufferType == "Percentage"
+    ibBufferHigh := ibHigh * (ibBufferPercent / 100)
+    ibBufferLow := ibLow * (ibBufferPercent / 100)
+
+// IB Breakout Conditions with buffer
+ibBreakUp = false
+ibBreakDown = false
+
+if ibFormed
+    // Reset flags when price returns inside IB (exactly like ORB does it)
+    if hasIBBreakUp and close <= ibHigh
+        hasIBBreakUp := false
+    if hasIBBreakDown and close >= ibLow
+        hasIBBreakDown := false
+    
+    // Only signal if we haven't already broken out
+    ibBreakUp := close > (ibHigh + ibBufferHigh) and not hasIBBreakUp
+    ibBreakDown := close < (ibLow - ibBufferLow) and not hasIBBreakDown
+    
+    // Set flags on breakout
+    if ibBreakUp
+        hasIBBreakUp := true
+    if ibBreakDown
+        hasIBBreakDown := true
+
+ibConditionMet = useIBFilter ? (ibFormed and (ibBreakUp or ibBreakDown)) : true
+// Volume filter calculation
+avgVolume = ta.sma(volume, 20)
+volumeCondition = not useVolumeFilter or volume >= avgVolume * volumeThresholdEff
+
+
+// Higher timeframe trend filter
+htfEma = request.security(syminfo.tickerid, "5", ta.ema(close, htfTrendLength))
+htfClose = request.security(syminfo.tickerid, "5", close)
+htfTrendBullish = not useHTFTrendFilter or (htfClose > htfEma)
+htfTrendBearish = not useHTFTrendFilter or (htfClose < htfEma)
+
+// Get market trend
+marketClose = request.security(marketETF, timeframe.period, close)
+marketEma = request.security(marketETF, timeframe.period, ta.ema(close, marketTrendLength))
+marketBullish = not useMarketRegimeFilter or (marketClose > marketEma)
+marketBearish = not useMarketRegimeFilter or (marketClose < marketEma)
+
+vwapValue = ta.vwap(hlc3)
+
+// ════════════════════════════════════════════════════════════════════════════
+// SSL HYBRID with SMOOTHING - NOW USING sslBaselineLengthEff (FIXED!)
+// ════════════════════════════════════════════════════════════════════════════
+
+// Calculate raw baseline - USING PRESET VALUE
+baselineRaw = ma(close, sslBaselineLengthEff, sslBaseline)  // FIXED: was sslBaselineLength
+
+// Apply smoothing if enabled
+baseline = applySmoother(baselineRaw, sslSmoothingEnabled, sslSmoothingMethod, sslSmoothingFactor)
+
+// SSL bands with potential smoothing - USING PRESET VALUE
+sslUpRaw = ma(high, sslLengthEff, sslType)    // FIXED: was sslLength
+sslDownRaw = ma(low, sslLengthEff, sslType)   // FIXED: was sslLength
+
+// Optionally smooth the SSL bands too (lighter smoothing)
+sslUp = applySmoother(sslUpRaw, sslSmoothingEnabled and sslSmoothingMethod != "Super Smoother", "EMA Post-Smooth", sslSmoothingFactor * 0.5)
+sslDown = applySmoother(sslDownRaw, sslSmoothingEnabled and sslSmoothingMethod != "Super Smoother", "EMA Post-Smooth", sslSmoothingFactor * 0.5)
+
+// Exit MA with smoothing - USING PRESET VALUE
+exitHighRaw = ma(high, exitLengthEff, exitType)  // FIXED: was exitLength
+exitLowRaw = ma(low, exitLengthEff, exitType)    // FIXED: was exitLength
+
+// Apply smoothing to the exit bands
+exitHigh = applySmoother(exitHighRaw, sslSmoothingEnabled, "EMA Post-Smooth", sslSmoothingFactor * 0.3)
+exitLow = applySmoother(exitLowRaw, sslSmoothingEnabled, "EMA Post-Smooth", sslSmoothingFactor * 0.3)
+
+// Keep the original SSL switching logic
+var int exitDirection = 0
+exitDirection := close > exitHigh ? 1 : close < exitLow ? -1 : exitDirection
+sslExit = exitDirection < 0 ? exitHigh : exitLow
+
+var int sslDirection = 0
+sslDirection := close > sslUp ? 1 : close < sslDown ? -1 : sslDirection
+
+sslBullishSimple = close > baseline
+sslBearishSimple = close < baseline
+sslBullish = sslBullishSimple and not sslBullishSimple[1]
+sslBearish = sslBearishSimple and not sslBearishSimple[1]
+
+// SSL Gap Widening Detection (NA-safe)
+// For longs: gap above baseline must be growing
+// For shorts: gap below baseline must be growing
+sslGapBull = close - baseline
+sslGapBear = baseline - close
+
+sslAccelBull = nz(sslGapBull) > nz(sslGapBull[1])
+sslAccelBear = nz(sslGapBear) > nz(sslGapBear[1])
+
+// SSL Score Calculation with Gap Widening Filter
+var float sslScoreBull = 0.0
+var float sslScoreBear = 0.0
+
+// Reset scores explicitly each bar
+sslScoreBull := 0.0
+sslScoreBear := 0.0
+
+if useSSLMomentumFilter
+    // Bullish: must be above baseline AND gap widening
+    if sslBullishSimple and sslAccelBull
+        sslScoreBull := 1.0
+    
+    // Bearish: must be below baseline AND gap widening
+    if sslBearishSimple and sslAccelBear
+        sslScoreBear := 1.0
+else
+    // Original behavior if filter is off
+    sslScoreBull := sslBullishSimple ? 1.0 : 0.0
+    sslScoreBear := sslBearishSimple ? 1.0 : 0.0
+
+sslExitLong = ta.crossover(close, sslExit)
+sslExitShort = ta.crossunder(close, sslExit)
+
+// Calculate EMAs for exit logic (synced with ORB)
+ema9 = ta.ema(close, emaPeriod)
+ema20 = ta.ema(close, ema20Period)
+
+// Track SSL breach state
+var bool sslBreachedLong = false
+var bool sslBreachedShort = false
+
+// SSL breach detection - EARLY WARNING when price crosses SSL2 bands
+// This triggers "start watching for EMA exit" - not the exit itself
+if inLongPosition and ta.crossunder(close, sslDown)
+    sslBreachedLong := true
+if inShortPosition and ta.crossover(close, sslUp)
+    sslBreachedShort := true
+
+// Reset breach flags when position closes
+if not inLongPosition
+    sslBreachedLong := false
+if not inShortPosition
+    sslBreachedShort := false
+
+// EMA exit conditions - now require confirmation bars (synced with ORB)
+// Track bars under/over EMA for confirmation
+if inLongPosition and close < ema9
+    barsUnderEma := barsUnderEma + 1
+else
+    barsUnderEma := 0
+
+if inShortPosition and close > ema9
+    barsOverEma := barsOverEma + 1
+else
+    barsOverEma := 0
+
+// EMA body percentage check (synced with ORB)
+float bodySize = math.abs(close - open)
+float bodyBeyondEmaLong = open > ema9 ? 0.0 : math.min(bodySize, ema9 - close) / bodySize * 100
+float bodyBeyondEmaShort = open < ema9 ? 0.0 : math.min(bodySize, close - ema9) / bodySize * 100
+
+// Primary EMA exit (after SSL breach + BE achieved, with confirmation)
+emaExitLong = inLongPosition and sslBreachedLong and breakEvenActivated and
+              barsUnderEma >= emaConfirmationBars and bodyBeyondEmaLong >= emaBodyPercentage
+emaExitShort = inShortPosition and sslBreachedShort and breakEvenActivated and
+               barsOverEma >= emaConfirmationBars and bodyBeyondEmaShort >= emaBodyPercentage
+
+// Alternative 9/20 EMA cross exit (synced with ORB)
+emaCrossExitLong = inLongPosition and not useEmaCrossExitEff and useEmaCrossExit920 and ta.crossunder(ema9, ema20)
+emaCrossExitShort = inShortPosition and not useEmaCrossExitEff and useEmaCrossExit920 and ta.crossover(ema9, ema20)
+
+// WADDAH ATTAR EXPLOSION
+fastMA = ta.ema(close, waeFastEMAEff)
+slowMA = ta.ema(close, waeSlowEMAEff)
+macd = fastMA - slowMA
+macdPrev = fastMA[1] - slowMA[1]
+t1 = (macd - macdPrev) * waeSensitivityEff
+
+basis = ta.sma(close, waeBBLengthEff)
+dev = waeBBMultiplierEff * ta.stdev(close, waeBBLengthEff)
+bbUpper = basis + dev
+bbLower = basis - dev
+explosionLine = bbUpper - bbLower
+
+trendUp = t1 >= 0 ? t1 : 0
+trendDown = t1 < 0 ? -1 * t1 : 0
+
+// WAE confirmation states (synced with ORB)
+waeBullConfirmation = trendUp > explosionLine
+waeBearConfirmation = trendDown > explosionLine
+
+// WAE Acceleration Detection - includes explosion line check (synced with ORB)
+bool waeAccelBull = trendUp > nz(trendUp[1]) and trendUp > explosionLine
+bool waeAccelBear = trendDown > nz(trendDown[1]) and trendDown > explosionLine
+
+// WAE Score with Acceleration Filter (synced with ORB)
+var float waeScoreBull = 0.0
+var float waeScoreBear = 0.0
+waeScoreBull := 0.0
+waeScoreBear := 0.0
+
+if useWAEAcceleration
+    if waeBullConfirmation and waeAccelBull
+        waeScoreBull := 1.0
+    if waeBearConfirmation and waeAccelBear
+        waeScoreBear := 1.0
+else
+    waeScoreBull := waeBullConfirmation ? 1.0 : 0.0
+    waeScoreBear := waeBearConfirmation ? 1.0 : 0.0
+
+// QQE MOD
+calculateQQE(rsiLength, smoothingFactor, qqeFactor, source) =>
+    wildersLength = rsiLength * 2 - 1
+    rsi = ta.rsi(source, rsiLength)
+    smoothedRsi = ta.ema(rsi, smoothingFactor)
+    atrRsi = math.abs(smoothedRsi[1] - smoothedRsi)
+    smoothedAtrRsi = ta.ema(atrRsi, wildersLength)
+    dynamicAtrRsi = smoothedAtrRsi * qqeFactor
+
+    var float longBand = 0.0
+    var float shortBand = 0.0
+    var int trendDirection = 0
+
+    atrDelta = dynamicAtrRsi
+    newShortBand = smoothedRsi + atrDelta
+    newLongBand = smoothedRsi - atrDelta
+    longBand := smoothedRsi[1] > longBand[1] and smoothedRsi > longBand[1] ? math.max(longBand[1], newLongBand) : newLongBand
+    shortBand := smoothedRsi[1] < shortBand[1] and smoothedRsi < shortBand[1] ? math.min(shortBand[1], newShortBand) : newShortBand
+    
+    crossUp = ta.cross(smoothedRsi, shortBand[1])
+    crossDown = ta.cross(longBand[1], smoothedRsi)
+    
+    if crossUp
+        trendDirection := 1
+    else if crossDown
+        trendDirection := -1
+    else
+        trendDirection := trendDirection[1]
+
+    qqeTrendLine = trendDirection == 1 ? longBand : shortBand
+    [qqeTrendLine, smoothedRsi, trendDirection]
+
+[primaryQQETrendLine, primaryRSI, primaryTrend] = calculateQQE(qqeRSI1LengthEff, qqeRSI1SmoothingEff, qqeFactor1Eff, close)
+[secondaryQQETrendLine, secondaryRSI, secondaryTrend] = calculateQQE(qqeRSI2LengthEff, qqeRSI2SmoothingEff, qqeFactor2Eff, close)
+
+bollingerBasis     = ta.sma(primaryQQETrendLine - 50, qqeBBLengthEff)
+bollingerDeviation = qqeBBMultiplierEff * ta.stdev(primaryQQETrendLine - 50, qqeBBLengthEff)
+
+bollingerUpper = bollingerBasis + bollingerDeviation
+bollingerLower = bollingerBasis - bollingerDeviation
+
+// Raw QQE conditions using thresholdSecondary input (synced with ORB)
+rawQQEBullCondition = secondaryRSI - 50 > thresholdSecondary and primaryRSI - 50 > bollingerUpper
+rawQQEBearCondition = secondaryRSI - 50 < -thresholdSecondary and primaryRSI - 50 < bollingerLower
+
+// Signal strength calculation (synced with ORB)
+bullSignalStrength = math.min(secondaryRSI - 50 - thresholdSecondary, primaryRSI - 50 - bollingerUpper)
+bearSignalStrength = math.min(-thresholdSecondary - (secondaryRSI - 50), bollingerLower - (primaryRSI - 50))
+
+// Track consecutive increasing bars (synced with ORB)
+if rawQQEBullCondition
+    if bullSignalStrength > prevBullSignalStrength
+        bullQQEIncreasingCount := bullQQEIncreasingCount + 1
+    else
+        bullQQEIncreasingCount := 0
+else
+    bullQQEIncreasingCount := 0
+
+if rawQQEBearCondition
+    if bearSignalStrength > prevBearSignalStrength
+        bearQQEIncreasingCount := bearQQEIncreasingCount + 1
+    else
+        bearQQEIncreasingCount := 0
+else
+    bearQQEIncreasingCount := 0
+
+prevBullSignalStrength := rawQQEBullCondition ? bullSignalStrength : 0.0
+prevBearSignalStrength := rawQQEBearCondition ? bearSignalStrength : 0.0
+
+// QQE signal requires N consecutive increasing bars (synced with ORB)
+qqeBullSignal := bullQQEIncreasingCount >= consecutiveIncreasingBars - 1 and rawQQEBullCondition
+qqeBearSignal := bearQQEIncreasingCount >= consecutiveIncreasingBars - 1 and rawQQEBearCondition
+
+// QQE Momentum Direction Detection (NA-safe)
+// For longs: momentum must be rising (RSI increasing)
+// For shorts: momentum must be falling (RSI decreasing)
+bool qqeMomentumRising = nz(primaryRSI) > nz(primaryRSI[1])
+bool qqeMomentumFalling = nz(primaryRSI) < nz(primaryRSI[1])
+
+// QQE Score with Momentum Direction Filter (synced with ORB)
+var float qqeScoreBull = 0.0
+var float qqeScoreBear = 0.0
+qqeScoreBull := 0.0
+qqeScoreBear := 0.0
+
+if useQQEMomentumFilter
+    // Bullish: must be in bullish state AND momentum rising
+    if qqeBullSignal and qqeMomentumRising
+        qqeScoreBull := 1.0
+    // Bearish: must be in bearish state AND momentum falling
+    if qqeBearSignal and qqeMomentumFalling
+        qqeScoreBear := 1.0
+else
+    // Original behavior if filter is off
+    qqeScoreBull := qqeBullSignal ? 1.0 : 0.0
+    qqeScoreBear := qqeBearSignal ? 1.0 : 0.0
+
+// VOLUME ANALYSIS (Z-Score Normalized - synced with ORB)
+volMean = ta.sma(volume, volLookback)
+volStd = ta.stdev(volume, volLookback)
+volZ = volStd > 0 ? (volume - volMean) / volStd : 0.0
+
+volScore := 0.0
+if volZ >= 1.0
+    volScore := 1.0      // 1+ stdev above normal = Strong (+1 confluence)
+else if volZ >= 0.2
+    volScore := 0.5      // Slightly above normal = Avg (+0 confluence)
+else
+    volScore := 0.0      // Below normal = Low (+0 confluence)
+
+volBullConfirmation := volScore >= 0.25
+volBearConfirmation := volScore >= 0.25
+
+// IB SCORING
+ibBullScore = 0.0
+ibBearScore = 0.0
+if includeIBInConfluence and ibFormed
+    ibBullScore := ibBreakUp ? 1.0 : 0.0
+    ibBearScore := ibBreakDown ? 1.0 : 0.0
+
+// CONFLUENCE SCORING (synced with ORB - includes volume)
+bullScore = sslScoreBull + waeScoreBull + qqeScoreBull + ibBullScore + (enableVolume ? int(math.round(volScore)) : 0)
+bearScore = sslScoreBear + waeScoreBear + qqeScoreBear + ibBearScore + (enableVolume ? int(math.round(volScore)) : 0)
+// Adjust max score for "require all" logic
+maxScore = (includeIBInConfluence ? 4 : 3) + (enableVolume ? 1 : 0)
+
+// ══════════════════════════════════════════════════════════════════════════
+// PRE-SIGNAL FEASIBILITY ENGINE (ORB Architecture)
+// Compute feasibility BEFORE signal definition so SKIPs never become signals
+// ══════════════════════════════════════════════════════════════════════════
+
+// Step 1: Compute adaptive R:R based on current volatility state
+float rrDesiredComputed = riskRewardRatio
+if useAdaptiveVolatility
+    if volState == "LOW"
+        rrDesiredComputed := riskRewardRatio + 0.5
+    else if volState == "NORMAL"
+        rrDesiredComputed := riskRewardRatio
+    else if volState == "HIGH"
+        rrDesiredComputed := math.max(1.2, riskRewardRatio - 0.5)
+    else  // EXTREME
+        rrDesiredComputed := math.max(1.0, riskRewardRatio - 0.8)
+
+// Step 2: Evaluate all stop options for BOTH directions using current close
+float preEntry = close
+[preBestStopL, preBestTypeL, preBestRRL, preAtrRRL, preSwingRRL, preVwapRRL, preHybridRRL] = evaluateBestStop(true, preEntry, atr, vwapValue, rrDesiredComputed, maxTargetATREff, minAcceptableRREff)
+[preBestStopS, preBestTypeS, preBestRRS, preAtrRRS, preSwingRRS, preVwapRRS, preHybridRRS] = evaluateBestStop(false, preEntry, atr, vwapValue, rrDesiredComputed, maxTargetATREff, minAcceptableRREff)
+
+// Step 3: Determine which R:R would be used based on auto/manual stop selection
+float preCandRRL = na
+float preCandRRS = na
+float preCandStopL = na
+float preCandStopS = na
+
+if autoSelectStop and useAdaptiveVolatility
+    // Auto mode: use best R:R
+    preCandRRL := preBestRRL
+    preCandRRS := preBestRRS
+    preCandStopL := preBestStopL
+    preCandStopS := preBestStopS
+else
+    // Manual mode: determine which stop type would be used
+    string stopTypeForCalc = stopLossType
+    if useAdaptiveVolatility and (volState == "HIGH" or volState == "EXTREME")
+        stopTypeForCalc := stopLossType == "ATR" ? "Hybrid" : stopLossType
+    
+    if stopTypeForCalc == "ATR"
+        preCandRRL := preAtrRRL
+        preCandRRS := preAtrRRS
+        preCandStopL := preEntry - (atr * atrStopMultiplierEff)
+        preCandStopS := preEntry + (atr * atrStopMultiplierEff)
+    else if stopTypeForCalc == "Swing"
+        preCandRRL := preSwingRRL
+        preCandRRS := preSwingRRS
+        float swingLowPre = findSwingLowRegularHours(swingLookback)
+        float swingHighPre = findSwingHighRegularHours(swingLookback)
+        float swingStopLCalc = swingLowPre - (atr * swingBufferEff)
+        float swingStopSCalc = swingHighPre + (atr * swingBufferEff)
+        preCandStopL := swingStopLCalc < preEntry - (atr * 0.15) ? swingStopLCalc : preEntry - (atr * atrStopMultiplierEff)
+        preCandStopS := swingStopSCalc > preEntry + (atr * 0.15) ? swingStopSCalc : preEntry + (atr * atrStopMultiplierEff)
+    else if stopTypeForCalc == "VWAP"
+        preCandRRL := preVwapRRL
+        preCandRRS := preVwapRRS
+        float vwapStopLCalc = vwapValue - (atr * vwapStopDistanceEff)
+        float vwapStopSCalc = vwapValue + (atr * vwapStopDistanceEff)
+        bool vwapLongOK = vwapValue < preEntry and vwapStopLCalc < preEntry - (atr * 0.15)
+        bool vwapShortOK = vwapValue > preEntry and vwapStopSCalc > preEntry + (atr * 0.15)
+        preCandStopL := vwapLongOK ? vwapStopLCalc : preEntry - (atr * atrStopMultiplierEff)
+        preCandStopS := vwapShortOK ? vwapStopSCalc : preEntry + (atr * atrStopMultiplierEff)
+    else if stopTypeForCalc == "Manual"
+        // Manual: fixed point distance from entry
+        preCandStopL := preEntry - manualStopPoints
+        preCandStopS := preEntry + manualStopPoints
+        // Calculate R:R for manual stops
+        float manualRiskL = math.abs(preEntry - preCandStopL)
+        float manualRiskS = math.abs(preEntry - preCandStopS)
+        float manualTargetATRsL = manualRiskL > 0 ? (manualRiskL * rrDesiredComputed) / atr : 999
+        float manualTargetATRsS = manualRiskS > 0 ? (manualRiskS * rrDesiredComputed) / atr : 999
+        preCandRRL := manualTargetATRsL <= maxTargetATREff ? rrDesiredComputed : (manualRiskL > 0 ? (maxTargetATREff * atr) / manualRiskL : 0)
+        preCandRRS := manualTargetATRsS <= maxTargetATREff ? rrDesiredComputed : (manualRiskS > 0 ? (maxTargetATREff * atr) / manualRiskS : 0)
+    else  // Hybrid
+        preCandRRL := preHybridRRL
+        preCandRRS := preHybridRRS
+        // Hybrid LONG
+        float atrStopLPre = preEntry - (atr * atrStopMultiplierEff)
+        float swingLowPre = findSwingLowRegularHours(swingLookback)
+        float swingStopLPre = swingLowPre - (atr * swingBufferEff)
+        float vwapStopLPre = vwapValue - (atr * vwapStopDistanceEff)
+        swingStopLPre := swingStopLPre < preEntry - (atr * 0.15) ? swingStopLPre : atrStopLPre
+        vwapStopLPre := (vwapValue < preEntry and vwapStopLPre < preEntry - (atr * 0.15)) ? vwapStopLPre : atrStopLPre
+        preCandStopL := hybridExcludeVwap ? math.max(atrStopLPre, swingStopLPre) : math.max(atrStopLPre, math.max(swingStopLPre, vwapStopLPre))
+        // Hybrid SHORT
+        float atrStopSPre = preEntry + (atr * atrStopMultiplierEff)
+        float swingHighPre = findSwingHighRegularHours(swingLookback)
+        float swingStopSPre = swingHighPre + (atr * swingBufferEff)
+        float vwapStopSPre = vwapValue + (atr * vwapStopDistanceEff)
+        swingStopSPre := swingStopSPre > preEntry + (atr * 0.15) ? swingStopSPre : atrStopSPre
+        vwapStopSPre := (vwapValue > preEntry and vwapStopSPre > preEntry + (atr * 0.15)) ? vwapStopSPre : atrStopSPre
+        preCandStopS := hybridExcludeVwap ? math.min(atrStopSPre, swingStopSPre) : math.min(atrStopSPre, math.min(swingStopSPre, vwapStopSPre))
+
+// Step 4: Calculate derived values for feasibility checks
+float preCandRiskL = math.abs(preEntry - preCandStopL)
+float preCandRiskS = math.abs(preEntry - preCandStopS)
+float preCandTargetL = preEntry + (preCandRiskL * nz(preCandRRL, 0))
+float preCandTargetS = preEntry - (preCandRiskS * nz(preCandRRS, 0))
+float preCandTargetATRsL = preCandRiskL > 0 ? math.abs(preCandTargetL - preEntry) / atr : 0
+float preCandTargetATRsS = preCandRiskS > 0 ? math.abs(preCandTargetS - preEntry) / atr : 0
+
+// Step 5: Apply ALL feasibility checks for LONG
+bool longTradeFeasible = true
+string skipReasonLong = ""
+
+if nz(preCandRRL, 0) < minAcceptableRREff
+    longTradeFeasible := false
+    skipReasonLong := "RR " + str.tostring(nz(preCandRRL, 0), "#.#") + " < min " + str.tostring(minAcceptableRREff, "#.#")
+
+if longTradeFeasible and skipLowVolCGradesEff and volState == "LOW" and nz(preCandRRL, 0) < lowVolMinRREff
+    longTradeFeasible := false
+    skipReasonLong := "LOW vol RR " + str.tostring(nz(preCandRRL, 0), "#.#") + " < " + str.tostring(lowVolMinRREff, "#.#")
+
+if longTradeFeasible and preCandTargetATRsL > maxTargetATREff
+    longTradeFeasible := false
+    skipReasonLong := "Target " + str.tostring(preCandTargetATRsL, "#.#") + " ATR > max " + str.tostring(maxTargetATREff, "#.#")
+
+if longTradeFeasible and preCandStopL >= preEntry
+    longTradeFeasible := false
+    skipReasonLong := "Invalid stop >= entry"
+
+// Step 6: Apply ALL feasibility checks for SHORT
+bool shortTradeFeasible = true
+string skipReasonShort = ""
+
+if nz(preCandRRS, 0) < minAcceptableRREff
+    shortTradeFeasible := false
+    skipReasonShort := "RR " + str.tostring(nz(preCandRRS, 0), "#.#") + " < min " + str.tostring(minAcceptableRREff, "#.#")
+
+if shortTradeFeasible and skipLowVolCGradesEff and volState == "LOW" and nz(preCandRRS, 0) < lowVolMinRREff
+    shortTradeFeasible := false
+    skipReasonShort := "LOW vol RR " + str.tostring(nz(preCandRRS, 0), "#.#") + " < " + str.tostring(lowVolMinRREff, "#.#")
+
+if shortTradeFeasible and preCandTargetATRsS > maxTargetATREff
+    shortTradeFeasible := false
+    skipReasonShort := "Target " + str.tostring(preCandTargetATRsS, "#.#") + " ATR > max " + str.tostring(maxTargetATREff, "#.#")
+
+if shortTradeFeasible and preCandStopS <= preEntry
+    shortTradeFeasible := false
+    skipReasonShort := "Invalid stop <= entry"
+
+// ══════════════════════════════════════════════════════════════════════════
+// END PRE-SIGNAL FEASIBILITY ENGINE
+// ══════════════════════════════════════════════════════════════════════════
+
+// ENHANCED SIGNAL GENERATION WITH QUALITY FILTERS
+baseConditionsMet = inMarketHours and inEntryWindow and not inLunchHour and volatilityCondition and ibConditionMet
+longConditionsMet = baseConditionsMet and htfTrendBullish and marketBullish and bullScore >= minConfluenceScore
+shortConditionsMet = baseConditionsMet and htfTrendBearish and marketBearish and bearScore >= minConfluenceScore
+
+bool canEnter = not inLongPosition and not inShortPosition and (bar_index - nz(lastEntryBar, 0) > minBarsBetweenEntries)
+
+longSignal_prev = longSignal[1]
+shortSignal_prev = shortSignal[1]
+
+// ══════════════════════════════════════════════════════════════════════════
+// CRITICAL: Feasibility is NOW part of the signal definition
+// A SKIP trade is NEVER a signal - alerts cannot escape
+// ══════════════════════════════════════════════════════════════════════════
+longSignal := longConditionsMet and canEnter and longTradeFeasible and barstate.isconfirmed
+shortSignal := shortConditionsMet and canEnter and shortTradeFeasible and barstate.isconfirmed
+
+// Detect NEW signals (first bar only) - these are ALWAYS feasible trades
+newLongSignal = longSignal and not longSignal[1]
+newShortSignal = shortSignal and not shortSignal[1]
+
+// ══════════════════════════════════════════════════════════════════════════
+// SKIP DETECTION - Conditions met but feasibility failed
+// These generate SKIP labels but NEVER fire alerts
+// ══════════════════════════════════════════════════════════════════════════
+bool longSkipCondition = longConditionsMet and canEnter and not longTradeFeasible and barstate.isconfirmed
+bool shortSkipCondition = shortConditionsMet and canEnter and not shortTradeFeasible and barstate.isconfirmed
+bool newLongSkip = longSkipCondition and not longSkipCondition[1]
+bool newShortSkip = shortSkipCondition and not shortSkipCondition[1]
+
+
+// ========================================
+// POSITION MANAGEMENT
+// ========================================
+
+labelOffsetDynamic = getLabelOffset()
+
+// EOD EXIT SIGNALS - Close all positions at market close
+eodExitLong = isMarketClose and inLongPosition
+eodExitShort = isMarketClose and inShortPosition
+
+// ══════════════════════════════════════════════════════════════════════════
+// EARLY CAM LEVEL CALCULATION (for composite grade)
+// Uses request.security to get previous day's data
+// ══════════════════════════════════════════════════════════════════════════
+[earlyCamHigh, earlyCamLow, earlyCamClose] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1]], barmerge.gaps_off, barmerge.lookahead_on)
+earlyCamRange = earlyCamHigh - earlyCamLow
+earlyCamR3 = earlyCamClose + earlyCamRange * 1.1 / 4
+earlyCamR4 = earlyCamClose + earlyCamRange * 1.1 / 2
+earlyCamS3 = earlyCamClose - earlyCamRange * 1.1 / 4
+earlyCamS4 = earlyCamClose - earlyCamRange * 1.1 / 2
+
+// ══════════════════════════════════════════════════════════════════════════
+// COMPOSITE TRADE GRADE CALCULATION
+// Single grade combining: RR (35%) + Confluence (35%) + Vol (15%) + CAM (15%)
+// ══════════════════════════════════════════════════════════════════════════
+
+// Helper function: Map RR to 0-100 score (single line to minimize scopes)
+f_rrScore(float rr) => rr < 1.5 ? 0.0 : rr >= 3.0 ? 100.0 : rr >= 2.5 ? 85.0 : rr >= 2.0 ? 70.0 : 50.0
+
+// Helper function: Map confluence (0-4) to 0-100 score
+f_confScore(float conf) => conf >= 4.0 ? 100.0 : conf >= 3.0 ? 75.0 : conf >= 2.0 ? 50.0 : conf >= 1.0 ? 25.0 : 0.0
+
+// Helper function: Map vol state to 0-100 score (for momentum/breakout trades)
+f_volScore(string vol) => vol == "LOW" ? 40.0 : vol == "NORMAL" ? 75.0 : vol == "HIGH" ? 90.0 : vol == "EXTREME" ? 65.0 : 50.0
+
+// Helper function: Map CAM alignment to 0-100 score
+// camStateR4/S4: 1=TREND_BREAK (breaks through), 2=EXHAUSTION (reverses), 3=CONFLICT
+f_camScore(bool isLong, float priceNow) =>
+    float score = 60.0
+    inR4Zone = not na(earlyCamR3) and priceNow >= earlyCamR3
+    inS4Zone = not na(earlyCamS3) and priceNow <= earlyCamS3
+    score := isLong ? (inS4Zone ? (camStateS4 == 2 ? 90.0 : camStateS4 == 1 ? 40.0 : 50.0) : inR4Zone ? (camStateR4 == 1 ? 80.0 : camStateR4 == 2 ? 30.0 : 50.0) : 60.0) : (inR4Zone ? (camStateR4 == 2 ? 90.0 : camStateR4 == 1 ? 40.0 : 50.0) : inS4Zone ? (camStateS4 == 1 ? 80.0 : camStateS4 == 2 ? 30.0 : 50.0) : 60.0)
+    score
+
+// Helper function: Calculate final composite grade (flattened to minimize scopes)
+f_compositeGrade(float rr, float confluence, string vol, bool isLong, float price) =>
+    float totalScore = rr < 1.5 ? 0.0 : (f_rrScore(rr) * 0.35) + (f_confScore(confluence) * 0.35) + (f_volScore(vol) * 0.15) + (f_camScore(isLong, price) * 0.15)
+    totalScore >= 90 ? "A+" : totalScore >= 80 ? "A" : totalScore >= 70 ? "B+" : totalScore >= 60 ? "B" : totalScore >= 50 ? "C" : "D"
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// LONG ENTRY BLOCK - ORB Architecture (signal guarantees feasibility)
+// ══════════════════════════════════════════════════════════════════════════
+if barstate.isconfirmed and newLongSignal
+    // Signal fired = trade IS feasible (checked in signal definition)
+    // STEP 1: CALCULATE DESIRED R:R BASED ON VOLATILITY
+    float rrDesired = riskRewardRatio
+    if useAdaptiveVolatility
+        if volState == "LOW"
+            rrDesired := riskRewardRatio + 0.5
+        else if volState == "NORMAL"
+            rrDesired := riskRewardRatio
+        else if volState == "HIGH"
+            rrDesired := math.max(1.2, riskRewardRatio - 0.5)
+        else  // EXTREME
+            rrDesired := math.max(1.0, riskRewardRatio - 0.8)
+
+    // STEP 2: GET ALL STOP OPTIONS FROM SINGLE ENGINE
+    float candEntry = close
+    [bestStop, bestType, bestRR, atrBestRR, swingBestRR, vwapBestRR, hybridBestRR] = evaluateBestStop(true, candEntry, atr, vwapValue, rrDesired, maxTargetATREff, minAcceptableRREff)
+    
+    // STEP 3: SELECT STOP (auto or manual) - ALL USE evaluateBestStop R:Rs
+    float candStop = na
+    string candStopType = ""
+    float candRR = na
+    
+    if autoSelectStop and useAdaptiveVolatility
+        candStop := bestStop
+        candStopType := bestType
+        candRR := bestRR
+    else
+        string stopTypeForThisTrade = stopLossType
+        if useAdaptiveVolatility and (volState == "HIGH" or volState == "EXTREME")
+            stopTypeForThisTrade := stopLossType == "ATR" ? "Hybrid" : stopLossType
+        
+        if stopTypeForThisTrade == "ATR"
+            candStop := candEntry - (atr * atrStopMultiplierEff)
+            candStopType := "ATR"
+            candRR := atrBestRR
+        else if stopTypeForThisTrade == "Swing"
+            float swingLow = findSwingLowRegularHours(swingLookback)
+            float swingStopCalc = swingLow - (atr * swingBufferEff)
+            bool swingOK = swingStopCalc < candEntry - (atr * 0.15)
+            candStop := swingOK ? swingStopCalc : candEntry - (atr * atrStopMultiplierEff)
+            candStopType := swingOK ? "Swing" : "ATR-Fallback"
+            candRR := swingOK and swingBestRR > 0 ? swingBestRR : atrBestRR
+        else if stopTypeForThisTrade == "VWAP"
+            float vwapStopCalc = vwapValue - (atr * vwapStopDistanceEff)
+            bool vwapOK = vwapValue < candEntry and vwapStopCalc < candEntry - (atr * 0.15)
+            candStop := vwapOK ? vwapStopCalc : candEntry - (atr * atrStopMultiplierEff)
+            candStopType := vwapOK ? "VWAP" : "ATR-Fallback"
+            candRR := vwapOK and vwapBestRR > 0 ? vwapBestRR : atrBestRR
+        else if stopTypeForThisTrade == "Manual"
+            candStop := candEntry - manualStopPoints
+            candStopType := "Manual"
+            float manualRisk = math.abs(candEntry - candStop)
+            float manualTargetATRs = manualRisk > 0 ? (manualRisk * rrDesired) / atr : 999
+            candRR := manualTargetATRs <= maxTargetATREff ? rrDesired : (manualRisk > 0 ? (maxTargetATREff * atr) / manualRisk : 0)
+        else  // Hybrid
+            float atrStopL = candEntry - (atr * atrStopMultiplierEff)
+            float swingLow = findSwingLowRegularHours(swingLookback)
+            float swingStopL = swingLow - (atr * swingBufferEff)
+            float vwapStopL = vwapValue - (atr * vwapStopDistanceEff)
+            bool swingOK = swingStopL < candEntry - (atr * 0.15)
+            bool vwapOK = vwapValue < candEntry and vwapStopL < candEntry - (atr * 0.15)
+            swingStopL := swingOK ? swingStopL : atrStopL
+            vwapStopL := vwapOK ? vwapStopL : atrStopL
+            candStop := hybridExcludeVwap ? math.max(atrStopL, swingStopL) : math.max(atrStopL, math.max(swingStopL, vwapStopL))
+            candStopType := "Hybrid"
+            candRR := hybridBestRR > 0 ? hybridBestRR : atrBestRR
+
+    // Calculate derived values
+    float candRiskPerShare = math.abs(candEntry - candStop)
+    float candTarget = candEntry + (candRiskPerShare * candRR)
+    float candTargetATRs = math.abs(candTarget - candEntry) / atr
+    
+    // COMPOSITE TRADE GRADE - Single grade for instant decision making
+    string candGrade = f_compositeGrade(candRR, bullScore, volState, true, close)
+    
+    // ENTRY EXECUTION - No inner gate needed (signal guarantees feasibility)
+    float entryFinal = math.round(candEntry / syminfo.mintick) * syminfo.mintick
+    float stopFinal = math.round(candStop / syminfo.mintick) * syminfo.mintick
+    float targetFinal = math.round(candTarget / syminfo.mintick) * syminfo.mintick
+    
+    string entryStr = str.tostring(entryFinal, "#.##")
+    string stopStr = str.tostring(stopFinal, "#.##")
+    string targetStr = str.tostring(targetFinal, "#.##")
+    
+    tradeState := 1
+    lastEntryBar := bar_index
+    entryPrice := entryFinal
+    stopPrice := stopFinal
+    initialStopPrice := stopFinal  // Store for trailing stop risk calc
+    targetPrice := targetFinal
+    // Reset trailing/EMA exit state
+    trailingStopActivated := false
+    trailingStopLevel := na
+    barsUnderEma := 0
+    barsOverEma := 0
+
+    float beThresholdAdj = breakEvenRREff
+    if useAdaptiveBEEff
+        if volState == "LOW"
+            beThresholdAdj := breakEvenRREff + 0.2
+        else if volState == "HIGH"
+            beThresholdAdj := breakEvenRREff - 0.1
+        else if volState == "EXTREME"
+            beThresholdAdj := breakEvenRREff - 0.2
+
+    breakEvenPrice := entryPrice + ((entryPrice - stopPrice) * beThresholdAdj)
+    entryBar := bar_index
+    
+    lastRRUsed := candRR
+    lastTargetATRs := candTargetATRs
+    lastVolState := volState
+    lastAtrRR := atrBestRR
+    lastSwingRR := swingBestRR
+    lastVwapRR := vwapBestRR
+    lastHybridRR := hybridBestRR
+    lastStopTypeUsed := candStopType
+    
+    positionSize := candRiskPerShare > 0 ? fixedRisk / candRiskPerShare : 0
+    breakEvenActivated := false
+    targetGrade := candGrade
+    
+    color labelColor = f_trafficLightColor(bullScore, candGrade, volState)
+    color textCol = labelColor == color.new(#00FF00, 0) ? color.black : color.white
+    
+    addManagedLabel(bar_index, low - labelOffsetDynamic, 
+         "▲ LONG @ " + entryStr + " [" + volState + "]\n" +
+         str.tostring(int(positionSize)) + " shares | " + candStopType + " Stop: " + stopStr + "\n" +
+         str.tostring(candRR, "#.#") + ":1 (" + candGrade + ") [min:" + str.tostring(minAcceptableRREff, "#.#") + "]",
+         labelColor,
+         label.style_label_up, 
+         textCol, 
+         getLabelSize())
+    
+    // ═══════════════════════════════════════════════════════════════
+    // TRADE BOX VISUALIZER - Create risk/reward boxes on entry
+    // ═══════════════════════════════════════════════════════════════
+    if showTradeBoxes
+        // Delete any existing boxes from previous trade (safe on na)
+        box.delete(riskBox)
+        box.delete(rewardBox)
+        line.delete(entryLine)
+        line.delete(stopLine)
+        line.delete(targetLine)
+        label.delete(rrLabel)
+        
+        // Create risk box (entry to stop) - RED
+        riskBox := box.new(
+             left=bar_index, right=bar_index + 1,
+             top=entryFinal, bottom=stopFinal,
+             bgcolor=color.new(color.red, 85),
+             border_color=color.new(color.red, 60),
+             border_width=1)
+        
+        // Create reward box (entry to target) - GREEN
+        rewardBox := box.new(
+             left=bar_index, right=bar_index + 1,
+             top=targetFinal, bottom=entryFinal,
+             bgcolor=color.new(color.green, 85),
+             border_color=color.new(color.green, 60),
+             border_width=1)
+        
+        // Create horizontal lines
+        entryLine := line.new(bar_index, entryFinal, bar_index + 1, entryFinal,
+             color=color.white, width=2, style=line.style_solid)
+        stopLine := line.new(bar_index, stopFinal, bar_index + 1, stopFinal,
+             color=color.red, width=1, style=line.style_dashed)
+        targetLine := line.new(bar_index, targetFinal, bar_index + 1, targetFinal,
+             color=color.green, width=1, style=line.style_dashed)
+        
+        // R:R label at target
+        rrLabel := label.new(bar_index, targetFinal,
+             str.tostring(candRR, "#.#") + "R",
+             color=color.new(color.green, 80),
+             textcolor=color.white,
+             style=label.style_label_down,
+             size=size.small)
+    
+    float swingLowVal = findSwingLowRegularHours(swingLookback)
+    
+    tradeCounter += 1
+    string tradeId = syminfo.ticker + "_" + str.tostring(tradeCounter)
+    
+    string symtf = syminfo.ticker + " " + timeframe.period
+    int shares = int(positionSize)
+    
+    string longEntryMsg = "HMM|" + symtf + " | LONG"
+    longEntryMsg += " | EstEntry=" + entryStr
+    longEntryMsg += " | EstStop=" + stopStr
+    longEntryMsg += " | Target=" + targetStr
+    longEntryMsg += " | Shares=" + str.tostring(shares, "#")
+    longEntryMsg += " | StopType=" + candStopType
+    longEntryMsg += " | ATR=" + str.tostring(atr, "#.####")
+    longEntryMsg += " | ATRMult=" + str.tostring(atrStopMultiplierEff, "#.#")
+    longEntryMsg += " | SwingLevel=" + str.tostring(swingLowVal, "#.##")
+    longEntryMsg += " | SwingBuffer=" + str.tostring(swingBufferEff, "#.##")
+    longEntryMsg += " | VWAP=" + str.tostring(vwapValue, "#.##")
+    longEntryMsg += " | VWAPDist=" + str.tostring(vwapStopDistanceEff, "#.#")
+    longEntryMsg += " | RRUsed=" + str.tostring(candRR, "#.#")
+    longEntryMsg += " | TargetATR=" + str.tostring(candTargetATRs, "#.##")
+    longEntryMsg += " | VolState=" + volState
+    longEntryMsg += " | TradeID=" + tradeId
+    longEntryMsg += " | TradeGrade=" + candGrade
+    longEntryMsg += " | CandleTime=" + str.format("{0,date,yyyy-MM-dd HH:mm}", time_close)
+    longEntryMsg += " | Bar=" + str.tostring(bar_index)
+    
+    // ALERT FIRES UNCONDITIONALLY - signal guarantees feasibility
+    alert(longEntryMsg, alert.freq_once_per_bar_close)
+
+// ══════════════════════════════════════════════════════════════════════════
+// LONG SKIP LABEL - Conditions met but feasibility failed (NO ALERT)
+// ══════════════════════════════════════════════════════════════════════════
+if barstate.isconfirmed and newLongSkip and showEntrySignals
+    addManagedLabel(bar_index, low - labelOffsetDynamic, 
+             "SKIP: " + str.tostring(nz(preCandRRL, 0), "#.#") + ":1 @ bar " + str.tostring(bar_index) + "\n" + skipReasonLong, 
+             color.new(color.gray, 10), 
+             label.style_label_up, 
+             color.white, 
+             size.small)
+
+// ══════════════════════════════════════════════════════════════════════════
+// SHORT ENTRY BLOCK - ORB Architecture (signal guarantees feasibility)
+// ══════════════════════════════════════════════════════════════════════════
+if barstate.isconfirmed and newShortSignal
+    // Signal fired = trade IS feasible (checked in signal definition)
+    // STEP 1: CALCULATE DESIRED R:R BASED ON VOLATILITY
+    float rrDesired = riskRewardRatio
+    if useAdaptiveVolatility
+        if volState == "LOW"
+            rrDesired := riskRewardRatio + 0.5
+        else if volState == "NORMAL"
+            rrDesired := riskRewardRatio
+        else if volState == "HIGH"
+            rrDesired := math.max(1.2, riskRewardRatio - 0.5)
+        else  // EXTREME
+            rrDesired := math.max(1.0, riskRewardRatio - 0.8)
+
+    // STEP 2: GET ALL STOP OPTIONS FROM SINGLE ENGINE
+    float candEntry = close
+    [bestStop, bestType, bestRR, atrBestRR, swingBestRR, vwapBestRR, hybridBestRR] = evaluateBestStop(false, candEntry, atr, vwapValue, rrDesired, maxTargetATREff, minAcceptableRREff)
+    
+    // STEP 3: SELECT STOP (auto or manual) - ALL USE evaluateBestStop R:Rs
+    float candStop = na
+    string candStopType = ""
+    float candRR = na
+    
+    if autoSelectStop and useAdaptiveVolatility
+        candStop := bestStop
+        candStopType := bestType
+        candRR := bestRR
+    else
+        string stopTypeForThisTrade = stopLossType
+        if useAdaptiveVolatility and (volState == "HIGH" or volState == "EXTREME")
+            stopTypeForThisTrade := stopLossType == "ATR" ? "Hybrid" : stopLossType
+        
+        if stopTypeForThisTrade == "ATR"
+            candStop := candEntry + (atr * atrStopMultiplierEff)
+            candStopType := "ATR"
+            candRR := atrBestRR
+        else if stopTypeForThisTrade == "Swing"
+            float swingHigh = findSwingHighRegularHours(swingLookback)
+            float swingStopCalc = swingHigh + (atr * swingBufferEff)
+            bool swingOK = swingStopCalc > candEntry + (atr * 0.15)
+            candStop := swingOK ? swingStopCalc : candEntry + (atr * atrStopMultiplierEff)
+            candStopType := swingOK ? "Swing" : "ATR-Fallback"
+            candRR := swingOK and swingBestRR > 0 ? swingBestRR : atrBestRR
+        else if stopTypeForThisTrade == "VWAP"
+            float vwapStopCalc = vwapValue + (atr * vwapStopDistanceEff)
+            bool vwapOK = vwapValue > candEntry and vwapStopCalc > candEntry + (atr * 0.15)
+            candStop := vwapOK ? vwapStopCalc : candEntry + (atr * atrStopMultiplierEff)
+            candStopType := vwapOK ? "VWAP" : "ATR-Fallback"
+            candRR := vwapOK and vwapBestRR > 0 ? vwapBestRR : atrBestRR
+        else if stopTypeForThisTrade == "Manual"
+            candStop := candEntry + manualStopPoints
+            candStopType := "Manual"
+            float manualRisk = math.abs(candEntry - candStop)
+            float manualTargetATRs = manualRisk > 0 ? (manualRisk * rrDesired) / atr : 999
+            candRR := manualTargetATRs <= maxTargetATREff ? rrDesired : (manualRisk > 0 ? (maxTargetATREff * atr) / manualRisk : 0)
+        else  // Hybrid
+            float atrStopS = candEntry + (atr * atrStopMultiplierEff)
+            float swingHigh = findSwingHighRegularHours(swingLookback)
+            float swingStopS = swingHigh + (atr * swingBufferEff)
+            float vwapStopS = vwapValue + (atr * vwapStopDistanceEff)
+            bool swingOK = swingStopS > candEntry + (atr * 0.15)
+            bool vwapOK = vwapValue > candEntry and vwapStopS > candEntry + (atr * 0.15)
+            swingStopS := swingOK ? swingStopS : atrStopS
+            vwapStopS := vwapOK ? vwapStopS : atrStopS
+            candStop := hybridExcludeVwap ? math.min(atrStopS, swingStopS) : math.min(atrStopS, math.min(swingStopS, vwapStopS))
+            candStopType := "Hybrid"
+            candRR := hybridBestRR > 0 ? hybridBestRR : atrBestRR
+    
+    // Calculate derived values
+    float candRiskPerShare = math.abs(candStop - candEntry)
+    float candTarget = candEntry - (candRiskPerShare * candRR)
+    float candTargetATRs = math.abs(candEntry - candTarget) / atr
+    
+    // COMPOSITE TRADE GRADE - Single grade for instant decision making
+    string candGrade = f_compositeGrade(candRR, bearScore, volState, false, close)
+    
+    // ENTRY EXECUTION - No inner gate needed (signal guarantees feasibility)
+    float entryFinal = math.round(candEntry / syminfo.mintick) * syminfo.mintick
+    float stopFinal = math.round(candStop / syminfo.mintick) * syminfo.mintick
+    float targetFinal = math.round(candTarget / syminfo.mintick) * syminfo.mintick
+    
+    string entryStr = str.tostring(entryFinal, "#.##")
+    string stopStr = str.tostring(stopFinal, "#.##")
+    string targetStr = str.tostring(targetFinal, "#.##")
+    
+    tradeState := -1
+    lastEntryBar := bar_index
+    entryPrice := entryFinal
+    stopPrice := stopFinal
+    initialStopPrice := stopFinal  // Store for trailing stop risk calc
+    targetPrice := targetFinal
+    // Reset trailing/EMA exit state
+    trailingStopActivated := false
+    trailingStopLevel := na
+    barsUnderEma := 0
+    barsOverEma := 0
+
+    float beThresholdAdj = breakEvenRREff
+    if useAdaptiveBEEff
+        if volState == "LOW"
+            beThresholdAdj := breakEvenRREff + 0.2
+        else if volState == "HIGH"
+            beThresholdAdj := breakEvenRREff - 0.1
+        else if volState == "EXTREME"
+            beThresholdAdj := breakEvenRREff - 0.2
+
+    breakEvenPrice := entryPrice - ((stopPrice - entryPrice) * beThresholdAdj)
+    entryBar := bar_index
+    
+    lastRRUsed := candRR
+    lastTargetATRs := candTargetATRs
+    lastVolState := volState
+    lastAtrRR := atrBestRR
+    lastSwingRR := swingBestRR
+    lastVwapRR := vwapBestRR
+    lastHybridRR := hybridBestRR
+    lastStopTypeUsed := candStopType
+    
+    positionSize := candRiskPerShare > 0 ? fixedRisk / candRiskPerShare : 0
+    breakEvenActivated := false
+    targetGrade := candGrade
+    
+    color labelColor = f_trafficLightColor(bearScore, candGrade, volState)
+    color textCol = labelColor == color.new(#00FF00, 0) ? color.black : color.white
+    
+    addManagedLabel(bar_index, high + labelOffsetDynamic, 
+         "▼ SHORT @ " + entryStr + " [" + volState + "]\n" +
+         str.tostring(int(positionSize)) + " shares | " + candStopType + " Stop: " + stopStr + "\n" +
+         str.tostring(candRR, "#.#") + ":1 (" + candGrade + ") [min:" + str.tostring(minAcceptableRREff, "#.#") + "]",
+         labelColor,
+         label.style_label_down, 
+         textCol, 
+         getLabelSize())
+    
+    // ═══════════════════════════════════════════════════════════════
+    // TRADE BOX VISUALIZER - Create risk/reward boxes on entry
+    // ═══════════════════════════════════════════════════════════════
+    if showTradeBoxes
+        // Delete any existing boxes from previous trade (safe on na)
+        box.delete(riskBox)
+        box.delete(rewardBox)
+        line.delete(entryLine)
+        line.delete(stopLine)
+        line.delete(targetLine)
+        label.delete(rrLabel)
+        
+        // Create risk box (entry to stop) - RED (stop is ABOVE entry for shorts)
+        riskBox := box.new(
+             left=bar_index, right=bar_index + 1,
+             top=stopFinal, bottom=entryFinal,
+             bgcolor=color.new(color.red, 85),
+             border_color=color.new(color.red, 60),
+             border_width=1)
+        
+        // Create reward box (entry to target) - GREEN (target is BELOW entry for shorts)
+        rewardBox := box.new(
+             left=bar_index, right=bar_index + 1,
+             top=entryFinal, bottom=targetFinal,
+             bgcolor=color.new(color.green, 85),
+             border_color=color.new(color.green, 60),
+             border_width=1)
+        
+        // Create horizontal lines
+        entryLine := line.new(bar_index, entryFinal, bar_index + 1, entryFinal,
+             color=color.white, width=2, style=line.style_solid)
+        stopLine := line.new(bar_index, stopFinal, bar_index + 1, stopFinal,
+             color=color.red, width=1, style=line.style_dashed)
+        targetLine := line.new(bar_index, targetFinal, bar_index + 1, targetFinal,
+             color=color.green, width=1, style=line.style_dashed)
+        
+        // R:R label at target
+        rrLabel := label.new(bar_index, targetFinal,
+             str.tostring(candRR, "#.#") + "R",
+             color=color.new(color.green, 80),
+             textcolor=color.white,
+             style=label.style_label_up,
+             size=size.small)
+    
+    float swingHighVal = findSwingHighRegularHours(swingLookback)
+    
+    tradeCounter += 1
+    string tradeId = syminfo.ticker + "_" + str.tostring(tradeCounter)
+    
+    string symtf = syminfo.ticker + " " + timeframe.period
+    int shares = int(positionSize)
+    
+    string shortEntryMsg = "HMM|" + symtf + " | SHORT"
+    shortEntryMsg += " | EstEntry=" + entryStr
+    shortEntryMsg += " | EstStop=" + stopStr
+    shortEntryMsg += " | Target=" + targetStr
+    shortEntryMsg += " | Shares=" + str.tostring(shares, "#")
+    shortEntryMsg += " | StopType=" + candStopType
+    shortEntryMsg += " | ATR=" + str.tostring(atr, "#.####")
+    shortEntryMsg += " | ATRMult=" + str.tostring(atrStopMultiplierEff, "#.#")
+    shortEntryMsg += " | SwingLevel=" + str.tostring(swingHighVal, "#.##")
+    shortEntryMsg += " | SwingBuffer=" + str.tostring(swingBufferEff, "#.##")
+    shortEntryMsg += " | VWAP=" + str.tostring(vwapValue, "#.##")
+    shortEntryMsg += " | VWAPDist=" + str.tostring(vwapStopDistanceEff, "#.#")
+    shortEntryMsg += " | RRUsed=" + str.tostring(candRR, "#.#")
+    shortEntryMsg += " | TargetATR=" + str.tostring(candTargetATRs, "#.##")
+    shortEntryMsg += " | VolState=" + volState
+    shortEntryMsg += " | TradeID=" + tradeId
+    shortEntryMsg += " | TradeGrade=" + candGrade
+    shortEntryMsg += " | CandleTime=" + str.format("{0,date,yyyy-MM-dd HH:mm}", time_close)
+    shortEntryMsg += " | Bar=" + str.tostring(bar_index)
+    
+    // ALERT FIRES UNCONDITIONALLY - signal guarantees feasibility
+    alert(shortEntryMsg, alert.freq_once_per_bar_close)
+
+// ══════════════════════════════════════════════════════════════════════════
+// SHORT SKIP LABEL - Conditions met but feasibility failed (NO ALERT)
+// ══════════════════════════════════════════════════════════════════════════
+if barstate.isconfirmed and newShortSkip and showEntrySignals
+    addManagedLabel(bar_index, high + labelOffsetDynamic, 
+             "SKIP: " + str.tostring(nz(preCandRRS, 0), "#.#") + ":1 @ bar " + str.tostring(bar_index) + "\n" + skipReasonShort, 
+             color.new(color.gray, 10), 
+             label.style_label_down, 
+             color.white, 
+             size.small)
+
+
+// POSITION MANAGEMENT (Break-Even Logic)
+// ========================================
+
+// Check and activate break-even for LONG positions
+// ═══════════════════════════════════════════════════════════════════════════
+// STOP LOSS CHECK - Must happen BEFORE break-even activation
+// This ensures original stop is honored even if BE threshold hit on same bar
+// ═══════════════════════════════════════════════════════════════════════════
+
+// LONG stop loss check (BEFORE BE moves the stop)
+if inLongPosition and low <= stopPrice and bar_index > entryBar
+    exitPrice = stopPrice
+    tradeProfit = (exitPrice - entryPrice) * positionSize
+    totalPnL += tradeProfit
+    lastTradePnL := tradeProfit
+    winCount := tradeProfit > 0 ? winCount + 1 : winCount
+    lossCount := tradeProfit < 0 ? lossCount + 1 : lossCount
+    maxWin := tradeProfit > 0 ? math.max(maxWin, tradeProfit) : maxWin
+    maxLoss := tradeProfit < 0 ? math.min(maxLoss, tradeProfit) : maxLoss
+    if showEntrySignals
+        addManagedLabel(bar_index, low - (labelOffsetDynamic * 0.5), trailingStopActivated ? "TRAIL STOP" : (breakEvenActivated ? "BE STOP" : "STOP LOSS"), color.new(color.red, 10), label.style_label_up, color.white, size.tiny)
+    tradeState := 0
+    hasIBBreakUp := false
+    trailingStopActivated := false
+    trailingStopLevel := na
+    initialStopPrice := na
+    line.delete(entryLine)
+    line.delete(stopLine)
+    line.delete(targetLine)
+    box.delete(riskBox)
+    box.delete(rewardBox)
+    label.delete(rrLabel)
+    entryLine := na
+    stopLine := na
+    targetLine := na
+    riskBox := na
+    rewardBox := na
+    rrLabel := na
+
+// SHORT stop loss check (BEFORE BE moves the stop)
+if inShortPosition and high >= stopPrice and bar_index > entryBar
+    exitPrice = stopPrice
+    tradeProfit = (entryPrice - exitPrice) * positionSize
+    totalPnL += tradeProfit
+    lastTradePnL := tradeProfit
+    winCount := tradeProfit > 0 ? winCount + 1 : winCount
+    lossCount := tradeProfit < 0 ? lossCount + 1 : lossCount
+    maxWin := tradeProfit > 0 ? math.max(maxWin, tradeProfit) : maxWin
+    maxLoss := tradeProfit < 0 ? math.min(maxLoss, tradeProfit) : maxLoss
+    if showEntrySignals
+        addManagedLabel(bar_index, high + (labelOffsetDynamic * 0.5), trailingStopActivated ? "TRAIL STOP" : (breakEvenActivated ? "BE STOP" : "STOP LOSS"), color.new(color.red, 10), label.style_label_down, color.white, size.tiny)
+    tradeState := 0
+    hasIBBreakDown := false
+    trailingStopActivated := false
+    trailingStopLevel := na
+    initialStopPrice := na
+    line.delete(entryLine)
+    line.delete(stopLine)
+    line.delete(targetLine)
+    box.delete(riskBox)
+    box.delete(rewardBox)
+    label.delete(rrLabel)
+    entryLine := na
+    stopLine := na
+    targetLine := na
+    riskBox := na
+    rewardBox := na
+    rrLabel := na
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BREAK-EVEN ACTIVATION - Only runs if stop wasn't hit
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Check and activate break-even for LONG positions
+if inLongPosition and useBreakEven and not breakEvenActivated
+    if high >= breakEvenPrice
+        stopPrice := entryPrice  // Move stop to entry (break-even)
+        breakEvenActivated := true
+        if showEntrySignals
+            addManagedLabel(bar_index, low - labelOffsetDynamic, 
+                     "BE STOP", 
+                     color.new(color.purple, 50), 
+                     label.style_label_up, 
+                     color.white, 
+                     size.small)
+
+// Check and activate break-even for SHORT positions
+if inShortPosition and useBreakEven and not breakEvenActivated
+    if low <= breakEvenPrice
+        stopPrice := entryPrice  // Move stop to entry (break-even)
+        breakEvenActivated := true
+        if showEntrySignals
+            addManagedLabel(bar_index, high + labelOffsetDynamic,
+                     "BE STOP",
+                     color.new(color.purple, 50),
+                     label.style_label_down,
+                     color.white,
+                     size.small)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TRAILING STOP LOGIC (synced with ORB)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// LONG Trailing Stop
+if inLongPosition and breakEvenActivated and useTrailingStop and not na(entryPrice) and not na(initialStopPrice)
+    float longRisk = math.abs(entryPrice - initialStopPrice)
+    float profitTargetPrice = entryPrice + (longRisk * profitTargetRREff)
+
+    // Activate trailing when profit target reached
+    if not trailingStopActivated and close >= profitTargetPrice
+        trailingStopActivated := true
+        trailingStopLevel := close - (atr * trailingStopDistanceEff)
+        if showEntrySignals
+            addManagedLabel(bar_index, high + labelOffsetDynamic,
+                     "TRAIL",
+                     color.new(color.blue, 50),
+                     label.style_label_down,
+                     color.white,
+                     size.small)
+
+    // Update trailing stop (ratchet up, never down)
+    if trailingStopActivated
+        float currentTrailDist = trailingStopDistanceEff
+        if aggressiveTrailingEff
+            float distToEma = math.abs(close - ema9)
+            if distToEma <= (atr * emaTightenZoneEff)
+                currentTrailDist := tightenedTrailDistanceEff
+
+        float newTrailLevel = close - (atr * currentTrailDist)
+        if newTrailLevel > trailingStopLevel
+            trailingStopLevel := newTrailLevel
+
+        // Trailing stop supersedes BE stop
+        stopPrice := math.max(trailingStopLevel, entryPrice)
+
+// SHORT Trailing Stop
+if inShortPosition and breakEvenActivated and useTrailingStop and not na(entryPrice) and not na(initialStopPrice)
+    float shortRisk = math.abs(entryPrice - initialStopPrice)
+    float profitTargetPrice = entryPrice - (shortRisk * profitTargetRREff)
+
+    // Activate trailing when profit target reached
+    if not trailingStopActivated and close <= profitTargetPrice
+        trailingStopActivated := true
+        trailingStopLevel := close + (atr * trailingStopDistanceEff)
+        if showEntrySignals
+            addManagedLabel(bar_index, low - labelOffsetDynamic,
+                     "TRAIL",
+                     color.new(color.blue, 50),
+                     label.style_label_up,
+                     color.white,
+                     size.small)
+
+    // Update trailing stop (ratchet down, never up)
+    if trailingStopActivated
+        float currentTrailDist = trailingStopDistanceEff
+        if aggressiveTrailingEff
+            float distToEma = math.abs(close - ema9)
+            if distToEma <= (atr * emaTightenZoneEff)
+                currentTrailDist := tightenedTrailDistanceEff
+
+        float newTrailLevel = close + (atr * currentTrailDist)
+        if newTrailLevel < trailingStopLevel
+            trailingStopLevel := newTrailLevel
+
+        // Trailing stop supersedes BE stop
+        stopPrice := math.min(trailingStopLevel, entryPrice)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TRADE BOX VISUALIZER - Update boxes every bar while in position
+// ═══════════════════════════════════════════════════════════════════════════
+if showTradeBoxes and (inLongPosition or inShortPosition)
+    // Extend boxes to current bar
+    if not na(riskBox)
+        box.set_right(riskBox, bar_index + 1)
+        // Update stop level if it changed (trailing stop or BE)
+        if inLongPosition
+            box.set_bottom(riskBox, stopPrice)
+        else
+            box.set_top(riskBox, stopPrice)
+    
+    if not na(rewardBox)
+        box.set_right(rewardBox, bar_index + 1)
+    
+    if not na(entryLine)
+        line.set_x2(entryLine, bar_index + 1)
+    
+    if not na(stopLine)
+        line.set_x2(stopLine, bar_index + 1)
+        line.set_y1(stopLine, stopPrice)
+        line.set_y2(stopLine, stopPrice)
+    
+    if not na(targetLine)
+        line.set_x2(targetLine, bar_index + 1)
+    
+    // Update R:R label position and value (recalculate current R:R)
+    if not na(rrLabel)
+        float currentRisk = math.abs(entryPrice - stopPrice)
+        float currentReward = math.abs(targetPrice - entryPrice)
+        float currentRR = currentRisk > 0 ? currentReward / currentRisk : 0
+        label.set_x(rrLabel, bar_index)
+        label.set_text(rrLabel, str.tostring(currentRR, "#.#") + "R")
+        
+        // Change color based on BE status
+        if breakEvenActivated
+            label.set_color(rrLabel, color.new(color.blue, 80))
+
+// Note: Stop loss checks moved BEFORE break-even activation (see earlier in code)
+// This ensures original stop is honored even if BE threshold hit on same bar
+
+// SSL WARNING SIGNALS (informative only)
+if inLongPosition and sslExitShort
+    if showEntrySignals
+        addManagedLabel(bar_index, high + labelOffsetDynamic, 
+                 "SSL", 
+                 color.new(color.orange, 10), 
+                 label.style_label_down, 
+                 color.white, 
+                 getLabelSize())
+
+if inShortPosition and sslExitLong
+    if showEntrySignals
+        addManagedLabel(bar_index, low - labelOffsetDynamic, 
+                 "SSL", 
+                 color.new(color.orange, 10), 
+                 label.style_label_up, 
+                 color.white, 
+                 getLabelSize())
+
+// EMA EXIT SIGNALS (synced with ORB - after SSL breach + BE, with confirmation)
+// Only trigger if useEmaCrossExitEff is enabled and NOT trailing
+if useEmaCrossExitEff and emaExitLong and inLongPosition and not trailingStopActivated and (breakEvenActivated or close > entryPrice)
+    tradeProfit = (close - entryPrice) * positionSize
+    totalPnL += tradeProfit
+    lastTradePnL := tradeProfit
+    winCount := tradeProfit > 0 ? winCount + 1 : winCount
+    lossCount := tradeProfit < 0 ? lossCount + 1 : lossCount
+    maxWin := tradeProfit > 0 ? math.max(maxWin, tradeProfit) : maxWin
+    maxLoss := tradeProfit < 0 ? math.min(maxLoss, tradeProfit) : maxLoss
+    if showEntrySignals
+        addManagedLabel(bar_index, high + labelOffsetDynamic, "EMA EXIT", color.new(color.red, 10), label.style_label_down, color.white, getLabelSize())
+    tradeState := 0
+    hasIBBreakUp := false
+    entryPrice := na
+    stopPrice := na
+    initialStopPrice := na
+    targetPrice := na
+    entryBar := na
+    positionSize := na
+    breakEvenActivated := false
+    trailingStopActivated := false
+    trailingStopLevel := na
+    sslBreachedLong := false
+    line.delete(entryLine)
+    line.delete(stopLine)
+    line.delete(targetLine)
+    box.delete(riskBox)
+    box.delete(rewardBox)
+    label.delete(rrLabel)
+    entryLine := na
+    stopLine := na
+    targetLine := na
+    riskBox := na
+    rewardBox := na
+    rrLabel := na
+
+// 9/20 EMA Cross Exit LONG - Alternative (handled via combined condition above)
+// Merged into emaExitLong block - emaCrossExitLong triggers same cleanup
+
+if emaCrossExitLong and inLongPosition
+    tradeProfit = (close - entryPrice) * positionSize
+    totalPnL += tradeProfit
+    lastTradePnL := tradeProfit
+    winCount := tradeProfit > 0 ? winCount + 1 : winCount
+    lossCount := tradeProfit < 0 ? lossCount + 1 : lossCount
+    maxWin := tradeProfit > 0 ? math.max(maxWin, tradeProfit) : maxWin
+    maxLoss := tradeProfit < 0 ? math.min(maxLoss, tradeProfit) : maxLoss
+    if showEntrySignals
+        addManagedLabel(bar_index, high + labelOffsetDynamic, "9/20 EXIT", color.new(color.orange, 10), label.style_label_down, color.white, getLabelSize())
+    tradeState := 0
+    hasIBBreakUp := false
+    entryPrice := na
+    stopPrice := na
+    initialStopPrice := na
+    targetPrice := na
+    entryBar := na
+    positionSize := na
+    breakEvenActivated := false
+    trailingStopActivated := false
+    trailingStopLevel := na
+    sslBreachedLong := false
+    line.delete(entryLine)
+    line.delete(stopLine)
+    line.delete(targetLine)
+    box.delete(riskBox)
+    box.delete(rewardBox)
+    label.delete(rrLabel)
+    entryLine := na
+    stopLine := na
+    targetLine := na
+    riskBox := na
+    rewardBox := na
+    rrLabel := na
+
+// EMA EXIT SHORT (synced with ORB)
+if useEmaCrossExitEff and emaExitShort and inShortPosition and not trailingStopActivated and (breakEvenActivated or close < entryPrice)
+    tradeProfit = (entryPrice - close) * positionSize
+    totalPnL += tradeProfit
+    lastTradePnL := tradeProfit
+    winCount := tradeProfit > 0 ? winCount + 1 : winCount
+    lossCount := tradeProfit < 0 ? lossCount + 1 : lossCount
+    maxWin := tradeProfit > 0 ? math.max(maxWin, tradeProfit) : maxWin
+    maxLoss := tradeProfit < 0 ? math.min(maxLoss, tradeProfit) : maxLoss
+    if showEntrySignals
+        addManagedLabel(bar_index, low - labelOffsetDynamic, "EMA EXIT", color.new(color.red, 10), label.style_label_up, color.white, getLabelSize())
+    tradeState := 0
+    hasIBBreakDown := false
+    entryPrice := na
+    stopPrice := na
+    initialStopPrice := na
+    targetPrice := na
+    entryBar := na
+    positionSize := na
+    breakEvenActivated := false
+    trailingStopActivated := false
+    trailingStopLevel := na
+    sslBreachedShort := false
+    line.delete(entryLine)
+    line.delete(stopLine)
+    line.delete(targetLine)
+    box.delete(riskBox)
+    box.delete(rewardBox)
+    label.delete(rrLabel)
+    entryLine := na
+    stopLine := na
+    targetLine := na
+    riskBox := na
+    rewardBox := na
+    rrLabel := na
+
+// 9/20 EMA Cross Exit SHORT - Alternative (synced with ORB)
+if emaCrossExitShort and inShortPosition
+    tradeProfit = (entryPrice - close) * positionSize
+    totalPnL += tradeProfit
+    lastTradePnL := tradeProfit
+    winCount := tradeProfit > 0 ? winCount + 1 : winCount
+    lossCount := tradeProfit < 0 ? lossCount + 1 : lossCount
+    maxWin := tradeProfit > 0 ? math.max(maxWin, tradeProfit) : maxWin
+    maxLoss := tradeProfit < 0 ? math.min(maxLoss, tradeProfit) : maxLoss
+    if showEntrySignals
+        addManagedLabel(bar_index, low - labelOffsetDynamic, "9/20 EXIT", color.new(color.orange, 10), label.style_label_up, color.white, getLabelSize())
+    tradeState := 0
+    hasIBBreakDown := false
+    entryPrice := na
+    stopPrice := na
+    initialStopPrice := na
+    targetPrice := na
+    entryBar := na
+    positionSize := na
+    breakEvenActivated := false
+    trailingStopActivated := false
+    trailingStopLevel := na
+    sslBreachedShort := false
+    line.delete(entryLine)
+    line.delete(stopLine)
+    line.delete(targetLine)
+    box.delete(riskBox)
+    box.delete(rewardBox)
+    label.delete(rrLabel)
+    entryLine := na
+    stopLine := na
+    targetLine := na
+    riskBox := na
+    rewardBox := na
+    rrLabel := na
+// ========================================
+// ========================================
+// END-OF-DAY EXIT - Close All Positions at Market Close
+// ========================================
+
+// EOD EXIT LONG
+if eodExitLong
+    tradeProfit = (close - entryPrice) * positionSize
+    totalPnL += tradeProfit
+    lastTradePnL := tradeProfit
+    winCount := tradeProfit > 0 ? winCount + 1 : winCount
+    lossCount := tradeProfit < 0 ? lossCount + 1 : lossCount
+    maxWin := tradeProfit > 0 ? math.max(maxWin, tradeProfit) : maxWin
+    maxLoss := tradeProfit < 0 ? math.min(maxLoss, tradeProfit) : maxLoss
+    if showEntrySignals
+        addManagedLabel(bar_index, high + labelOffsetDynamic, "EOD EXIT", color.new(color.purple, 10), label.style_label_down, color.white, getLabelSize())
+    tradeState := 0
+    hasIBBreakUp := false
+    entryPrice := na
+    stopPrice := na
+    initialStopPrice := na
+    targetPrice := na
+    entryBar := na
+    positionSize := na
+    breakEvenActivated := false
+    trailingStopActivated := false
+    trailingStopLevel := na
+    sslBreachedLong := false
+    line.delete(entryLine)
+    line.delete(stopLine)
+    line.delete(targetLine)
+    box.delete(riskBox)
+    box.delete(rewardBox)
+    label.delete(rrLabel)
+    entryLine := na
+    stopLine := na
+    targetLine := na
+    riskBox := na
+    rewardBox := na
+    rrLabel := na
+
+// EOD EXIT SHORT
+if eodExitShort
+    tradeProfit = (entryPrice - close) * positionSize
+    totalPnL += tradeProfit
+    lastTradePnL := tradeProfit
+    winCount := tradeProfit > 0 ? winCount + 1 : winCount
+    lossCount := tradeProfit < 0 ? lossCount + 1 : lossCount
+    maxWin := tradeProfit > 0 ? math.max(maxWin, tradeProfit) : maxWin
+    maxLoss := tradeProfit < 0 ? math.min(maxLoss, tradeProfit) : maxLoss
+    if showEntrySignals
+        addManagedLabel(bar_index, low - labelOffsetDynamic, "EOD EXIT", color.new(color.purple, 10), label.style_label_up, color.white, getLabelSize())
+    tradeState := 0
+    hasIBBreakDown := false
+    entryPrice := na
+    stopPrice := na
+    initialStopPrice := na
+    targetPrice := na
+    entryBar := na
+    positionSize := na
+    breakEvenActivated := false
+    trailingStopActivated := false
+    trailingStopLevel := na
+    sslBreachedShort := false
+    // Delete risk/reward lines and trade boxes
+    line.delete(entryLine)
+    entryLine := na
+    line.delete(stopLine)
+    stopLine := na
+    line.delete(targetLine)
+    targetLine := na
+    box.delete(riskBox)
+    riskBox := na
+    box.delete(rewardBox)
+    rewardBox := na
+    label.delete(rrLabel)
+    rrLabel := na
+
+// P/L CALCULATION
+// ========================================
+
+// Calculate P/L in dollars for current positions
+if inLongPosition and not na(entryPrice) and not na(positionSize)
+    longPnlDollars := (close - entryPrice) * positionSize
+else
+    longPnlDollars := na
+
+if inShortPosition and not na(entryPrice) and not na(positionSize)
+    shortPnlDollars := (entryPrice - close) * positionSize
+else
+    shortPnlDollars := na
+// ========================================
+// ALERT CONDITIONS
+// ========================================
+
+
+
+// ========================================
+// PLOTTING
+// ========================================
+
+// SSL plots with smoother lines
+baselineColor = sslBullishSimple ? color.new(color.green, 40) : color.new(color.red, 40)
+plot(showSSL ? baseline : na, "SSL Baseline", color=baselineColor, linewidth=2, style=plot.style_line)
+
+// Add a subtle gradient fill between price and baseline for visual clarity
+baselinePlot = plot(showSSL ? baseline : na, display=display.none)
+pricePlot = plot(showSSL ? close : na, display=display.none)
+fill(pricePlot, baselinePlot, color=sslBullishSimple ? color.new(color.green, 95) : color.new(color.red, 95))
+
+plot(showSSL ? sslExit : na, "SSL Exit Line", color=color.new(color.purple, 70), linewidth=1)
+
+// Plot 9 EMA for reference
+plot(ta.ema(close, 9), "9 EMA", color=color.new(color.yellow, 50), linewidth=1)
+
+// Entry Arrows - only show when trade ACTUALLY executes (state change)
+plotshape(showEntrySignals and tradeState == 1 and tradeState[1] != 1, title="Long Entry", location=location.belowbar, color=color.green, style=shape.arrowup, size=size.normal)
+plotshape(showEntrySignals and tradeState == -1 and tradeState[1] != -1, title="Short Entry", location=location.abovebar, color=color.red, style=shape.arrowdown, size=size.normal)
+
+// SSL Exit Arrows (only show when in position)
+plotshape(showEntrySignals and inLongPosition and sslExitLong, title="SSL Warning Long", location=location.belowbar, color=color.orange, style=shape.arrowup, size=size.small)
+plotshape(showEntrySignals and inShortPosition and sslExitShort, title="SSL Warning Short", location=location.abovebar, color=color.orange, style=shape.arrowdown, size=size.small)
+
+// Risk/reward lines
+if showRiskLines and (inLongPosition or inShortPosition)
+    // Delete old lines before creating new ones
+    if not na(entryLine)
+        line.delete(entryLine)
+    if not na(stopLine)
+        line.delete(stopLine)
+    if not na(targetLine)
+        line.delete(targetLine)
+    
+    // Create new lines
+    entryLine := line.new(entryBar, entryPrice, bar_index + 10, entryPrice, color=color.blue, width=1, style=line.style_solid)
+    stopLine := line.new(entryBar, stopPrice, bar_index + 10, stopPrice, color=color.red, width=1, style=line.style_dashed)
+    targetLine := line.new(entryBar, targetPrice, bar_index + 10, targetPrice, color=color.green, width=1, style=line.style_dashed)
+
+// Background coloring (more subtle)
+bgcolor(sslBullishSimple ? color.new(color.green, 97) : sslBearishSimple ? color.new(color.red, 97) : na)
+
+// Squeeze zone shading
+sqzColor = sqzBullish ? color.new(color.aqua, sqzTransparency) : color.new(color.fuchsia, sqzTransparency)
+bgcolor(showSqueeze and sqzOn ? sqzColor : na, title="Squeeze Zone")
+
+// =====================================================
+// CAM STATE BADGE (PHASE 2 – STEP 1)
+// =====================================================
+showCamStateBadge = input.bool(true, "Show CAM State Badge", group="Display Settings")
+
+
+// =====================================================
+// CAM LEVEL CALCULATIONS (PHASE 2 – STEP 1.5)
+// Auto RTH/ETH to match Bruz's logic
+// =====================================================
+
+// =====================================================
+// DAILY TIMEFRAME DATA (request.security method)
+// More accurate - uses official exchange daily OHLC
+// =====================================================
+// Get previous day's RTH data from daily timeframe
+[dailyPrevHigh, dailyPrevLow, dailyPrevClose] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1]], barmerge.gaps_off, barmerge.lookahead_on)
+
+// RTH session: 9:30 AM - 4:00 PM ET
+rthSession = "0930-1600:23456"
+inRTH = not na(time(timeframe.period, rthSession, "America/New_York"))
+
+// Pre-market: 4:00 AM - 9:30 AM ET
+preSession = "0400-0930:23456"
+inPre = not na(time(timeframe.period, preSession, "America/New_York"))
+
+// Post-market: 4:00 PM - 8:00 PM ET
+postSession = "1600-2000:23456"
+inPost = not na(time(timeframe.period, postSession, "America/New_York"))
+
+// Track RTH high/low/close
+var float rthHigh = na
+var float rthLow = na
+var float rthClose = na
+var float prevRthHigh = na
+var float prevRthLow = na
+var float prevRthClose = na
+
+// Track ETH (full day) high/low/close
+var float ethHigh = na
+var float ethLow = na
+var float ethClose = na
+var float prevEthHigh = na
+var float prevEthLow = na
+var float prevEthClose = na
+
+// Track pre-market high/low
+var float preHigh = na
+var float preLow = na
+
+// Track post-market high/low (previous day's post)
+var float postHigh = na
+var float postLow = na
+var float prevPostHigh = na
+var float prevPostLow = na
+
+// Detect new RTH day (RTH open)
+newRthDay = inRTH and not inRTH[1]
+
+// Detect new ETH day (pre-market open ~4 AM)
+newEthDay = inPre and not inPre[1]
+
+// Reset on new ETH day (start of pre-market)
+if newEthDay
+    prevEthHigh := ethHigh
+    prevEthLow := ethLow
+    prevEthClose := ethClose
+    ethHigh := high
+    ethLow := low
+    preHigh := high
+    preLow := low
+    prevPostHigh := postHigh
+    prevPostLow := postLow
+
+// Reset RTH values on new RTH day
+if newRthDay
+    prevRthHigh := rthHigh
+    prevRthLow := rthLow
+    prevRthClose := rthClose
+    rthHigh := high
+    rthLow := low
+
+// Track RTH high/low/close during RTH
+if inRTH
+    rthHigh := na(rthHigh) ? high : math.max(rthHigh, high)
+    rthLow := na(rthLow) ? low : math.min(rthLow, low)
+    rthClose := close
+
+// Track ETH high/low/close all day
+ethHigh := na(ethHigh) ? high : math.max(ethHigh, high)
+ethLow := na(ethLow) ? low : math.min(ethLow, low)
+ethClose := close
+
+// Track pre-market high/low
+if inPre
+    preHigh := na(preHigh) ? high : math.max(preHigh, high)
+    preLow := na(preLow) ? low : math.min(preLow, low)
+
+// Track post-market high/low
+if inPost
+    postHigh := na(postHigh) ? high : math.max(postHigh, high)
+    postLow := na(postLow) ? low : math.min(postLow, low)
+
+// =====================================================
+// CAM RANGE & CLOSE SELECTION (Bruz-compatible)
+// Key insight: Range and Close are INDEPENDENT
+// Bruz uses "Higher Range" (max of RTH/ETH) but anchors to RTH Close
+// =====================================================
+prevRthRange = prevRthHigh - prevRthLow
+prevEthRange = prevEthHigh - prevEthLow
+
+// For Auto mode: calculate pre/post ranges to match Bruz's switching logic
+preRange = preHigh - preLow
+postRange = prevPostHigh - prevPostLow
+
+// Bruz's auto-switch: use ETH if overnight range exceeds RTH range
+autoUseETH = false
+if not na(preRange) and not na(prevRthRange) and preRange > prevRthRange
+    autoUseETH := true
+if not na(postRange) and not na(prevRthRange) and postRange > prevRthRange
+    autoUseETH := true
+
+// Select RANGE based on mode
+float camRange = na
+if camRangeMode == "RTH Only"
+    camRange := prevRthRange
+else if camRangeMode == "Higher Range"
+    // Bruz's "Higher Range" mode - use the LARGER of RTH or ETH range
+    camRange := math.max(nz(prevRthRange), nz(prevEthRange))
+else if camRangeMode == "Lower Range"
+    // "Narrow Pivots" - use the SMALLER of RTH or ETH range (tighter levels)
+    // Only use min if both ranges exist, otherwise use whichever is available
+    if not na(prevRthRange) and not na(prevEthRange) and prevRthRange > 0 and prevEthRange > 0
+        camRange := math.min(prevRthRange, prevEthRange)
+    else
+        camRange := nz(prevRthRange, prevEthRange)
+else if camRangeMode == "Auto"
+    // Match Bruz's auto-switch: use ETH range if overnight range > RTH range
+    camRange := autoUseETH ? prevEthRange : prevRthRange
+else  // "ETH Only"
+    camRange := prevEthRange
+
+// Select CLOSE anchor (independent of range!)
+float camClose = na
+if camCloseAnchor == "RTH Close"
+    // Anchor to RTH close - Bruz default when using RTH data
+    camClose := useDailyTF ? dailyPrevClose : prevRthClose
+else if camCloseAnchor == "ETH Close"
+    // Anchor to ETH close - use when Bruz shows "Using ETH Data"
+    camClose := prevEthClose
+else if camCloseAnchor == "Auto"
+    // Match Bruz's auto-switch: ETH close if overnight range > RTH range
+    camClose := autoUseETH ? prevEthClose : prevRthClose
+else  // "Daily Close"
+    // Use official daily close from request.security
+    camClose := dailyPrevClose
+
+// Calculate Cam levels using independent RANGE + CLOSE
+camLevelR3 = camClose + camRange * 1.1 / 4
+camLevelR4 = camClose + camRange * 1.1 / 2
+camLevelS3 = camClose - camRange * 1.1 / 4
+camLevelS4 = camClose - camRange * 1.1 / 2
+
+
+// =====================================================
+// CAM STATE SELECTION (PHASE 2 – STEP 2)
+// Determines which zone we're in and which state applies
+// =====================================================
+int camStateActive = 3  // default CONFLICT (no edge)
+string camZoneName = "NEUTRAL"
+float camBreakProb = na
+float camRevProb = na
+float camExtATR = na
+
+if close >= camLevelR3
+    // Price in R4 zone - use R4 stats
+    camStateActive := camStateR4
+    camZoneName := "R4 ZONE"
+    camBreakProb := camBreakR4
+    camRevProb := camRevR4
+    camExtATR := camExtR4
+else if close <= camLevelS3
+    // Price in S4 zone - use S4 stats
+    camStateActive := camStateS4
+    camZoneName := "S4 ZONE"
+    camBreakProb := camBreakS4
+    camRevProb := camRevS4
+    camExtATR := camExtS4
+else
+    // Price between S3 and R3 - TRAVERSE zone
+    camStateActive := 0  // TRAVERSE
+    camZoneName := "TRAVERSE"
+
+// =====================================================
+// CAM STATE BADGE (PHASE 2 – STEP 1 ENHANCED)
+// =====================================================
+var label camStateLabel = na
+
+if showCamStateBadge and barstate.islast
+    string camStateText = "NO EDGE"
+    color camStateColor = color.new(color.gray, 0)
+    
+    if camStateActive == 1
+        camStateText := "TREND BREAK"
+        camStateColor := color.new(color.green, 0)
+    else if camStateActive == 2
+        camStateText := "EXHAUSTION"
+        camStateColor := color.new(color.red, 0)
+    else if camStateActive == 0
+        camStateText := "TRAVERSE"
+        camStateColor := color.new(color.yellow, 0)
+    
+    // Build stats string if available
+    string statsLine = ""
+    if not na(camBreakProb) and not na(camRevProb)
+        statsLine := "\n↑" + str.tostring(camBreakProb * 100, "#") + "%  ↓" + str.tostring(camRevProb * 100, "#") + "%"
+    
+    // Delete old label
+    if not na(camStateLabel)
+        label.delete(camStateLabel)
+    
+    // Create new badge with zone + state + stats
+    camTextColor = camStateColor == color.yellow ? color.black : color.white
+
+    camStateLabel := label.new(bar_index + 20, ta.highest(high, 50), "CAM: " + camZoneName + "\n" + camStateText + statsLine, style=label.style_label_lower_left, textcolor=camTextColor, color=camStateColor, size=size.normal)
+// =====================================================
+// CAM LEVEL HALOS (PHASE 2 – STEP 4)
+// Colored bands behind R4/S4 showing historical bias
+// =====================================================
+showCamHalos = input.bool(true, "Show CAM Level Halos", group="Display Settings")
+camHaloWidth = input.int(10, "CAM Halo Width", minval=1, maxval=20, group="Display Settings", tooltip="Line thickness for R4/S4 halos")
+camHaloTransparency = input.int(65, "CAM Halo Transparency", minval=0, maxval=95, group="Display Settings", tooltip="0=solid, 95=nearly invisible")
+
+// Determine halo colors based on state
+// R4 halo
+color haloColorR4 = color.new(color.gray, camHaloTransparency)  // default: no edge
+if camStateR4 == 1
+    haloColorR4 := color.new(color.green, camHaloTransparency)   // TREND BREAK - green glow
+else if camStateR4 == 2
+    haloColorR4 := color.new(color.red, camHaloTransparency)     // EXHAUSTION - red glow
+else if camStateR4 == 0
+    haloColorR4 := color.new(color.yellow, camHaloTransparency)  // TRAVERSE - yellow glow
+
+// S4 halo
+color haloColorS4 = color.new(color.gray, camHaloTransparency)  // default: no edge
+if camStateS4 == 1
+    haloColorS4 := color.new(color.green, camHaloTransparency)   // TREND BREAK - green glow
+else if camStateS4 == 2
+    haloColorS4 := color.new(color.red, camHaloTransparency)     // EXHAUSTION - red glow
+else if camStateS4 == 0
+    haloColorS4 := color.new(color.yellow, camHaloTransparency)  // TRAVERSE - yellow glow
+
+// Plot the halos as thick bands behind the levels
+// Use already-calculated cam levels (respects new Bruz-compatible settings)
+plot(showCamHalos ? camLevelR4 : na, "R4 Halo", color=haloColorR4, linewidth=camHaloWidth, style=plot.style_line)
+plot(showCamHalos ? camLevelS4 : na, "S4 Halo", color=haloColorS4, linewidth=camHaloWidth, style=plot.style_line)
+// Plot the actual Cam levels as thinner lines on top (optional - your proprietary indicator already shows these)
+// Uncomment if you want HMM to also draw the levels:
+// plot(showCamHalos ? camLevelR4 : na, "R4 Level", color=color.new(color.white, 50), linewidth=1, style=plot.style_line)
+// plot(showCamHalos ? camLevelS4 : na, "S4 Level", color=color.new(color.white, 50), linewidth=1, style=plot.style_line)
+// plot(showCamHalos ? camLevelR3 : na, "R3 Level", color=color.new(color.white, 70), linewidth=1, style=plot.style_line)
+// plot(showCamHalos ? camLevelS3 : na, "S3 Level", color=color.new(color.white, 70), linewidth=1, style=plot.style_line)
+
+// =====================================================
+// INLINE MINI-BADGES (PHASE 2 – STEP 5)
+// Small probability labels next to R4/S4 levels
+// Green = Break (GO), Red = Reversal (STOP)
+// =====================================================
+showCamMiniBadges = input.bool(true, "Show CAM Mini-Badges", group="Display Settings")
+
+var label miniBadgeR4Break = na
+var label miniBadgeR4Rev = na
+var label miniBadgeS4Break = na
+var label miniBadgeS4Rev = na
+
+if showCamMiniBadges and barstate.islast
+    // Clean up old labels
+    if not na(miniBadgeR4Break)
+        label.delete(miniBadgeR4Break)
+    if not na(miniBadgeR4Rev)
+        label.delete(miniBadgeR4Rev)
+    if not na(miniBadgeS4Break)
+        label.delete(miniBadgeS4Break)
+    if not na(miniBadgeS4Rev)
+        label.delete(miniBadgeS4Rev)
+    
+    // R4 mini-badges: ↑ break (green), ↓ reversal (red)
+    if not na(camBreakR4)
+        miniBadgeR4Break := label.new(bar_index + 20, camLevelR4, "↑" + str.tostring(camBreakR4 * 100, "#") + "%", style=label.style_label_left, color=color.new(color.black, 80), textcolor=color.green, size=size.large)
+        miniBadgeR4Rev := label.new(bar_index + 28, camLevelR4, "↓" + str.tostring(camRevR4 * 100, "#") + "%", style=label.style_label_left, color=color.new(color.black, 80), textcolor=color.red, size=size.large)
+
+// S4 mini-badges: ↓ break (green), ↑ reversal (red)
+    if not na(camBreakS4)
+        miniBadgeS4Break := label.new(bar_index + 20, camLevelS4, "↓" + str.tostring(camBreakS4 * 100, "#") + "%", style=label.style_label_left, color=color.new(color.black, 80), textcolor=color.green, size=size.large)
+        miniBadgeS4Rev := label.new(bar_index + 28, camLevelS4, "↑" + str.tostring(camRevS4 * 100, "#") + "%", style=label.style_label_left, color=color.new(color.black, 80), textcolor=color.red, size=size.large)
+// =====================================================
+// CAM PERSONALITY CARD (PHASE 2 – STEP 3)
+// Green = Break (GO), Red = Reversal (STOP)
+// Arrows match direction based on zone (R4 vs S4)
+// =====================================================
+showCamCard = input.bool(true, "Show CAM Personality Card", group="Display Settings")
+
+var table camCardTable = na
+
+if showCamCard and barstate.islast
+    // Clean up old table
+    if not na(camCardTable)
+        table.delete(camCardTable)
+    
+    // Determine state text and color
+    string stateText = "NO EDGE"
+    color stateColor = color.gray
+    
+    if camStateActive == 1
+        stateText := "TREND BREAK"
+        stateColor := color.green
+    else if camStateActive == 2
+        stateText := "EXHAUSTION"
+        stateColor := color.red
+    else if camStateActive == 0
+        stateText := "TRAVERSE"
+        stateColor := color.yellow
+    
+    // Determine arrows based on zone (R4 = up break, S4 = down break)
+    string breakArrow = "↑"
+    string revArrow = "↓"
+    if camZoneName == "S4 ZONE"
+        breakArrow := "↓"
+        revArrow := "↑"
+    
+    // Create table - positioned above HMM table (bottom_right, but we'll use middle_right to sit above)
+    camCardTable := table.new(position.bottom_center, 2, 6, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+    
+    // Header row
+    color headerTextColor = stateColor == color.yellow ? color.black : color.white
+    table.cell(camCardTable, 0, 0, "CAM PROFILE", bgcolor=color.gray, text_color=color.white, text_size=size.normal, text_halign=text.align_center)
+    table.cell(camCardTable, 1, 0, syminfo.ticker, bgcolor=stateColor, text_color=headerTextColor, text_size=size.normal, text_halign=text.align_center)
+    
+    // Zone row
+    table.cell(camCardTable, 0, 1, "Zone:", text_color=color.white, text_size=size.normal)
+    table.cell(camCardTable, 1, 1, camZoneName, text_color=stateColor, text_size=size.normal)
+    
+    // Break probability row (GREEN with directional arrow)
+    string breakText = na(camBreakProb) ? "–" : breakArrow + str.tostring(camBreakProb * 100, "#.#") + "%"
+    table.cell(camCardTable, 0, 2, "Break ≥1 ATR:", text_color=color.white, text_size=size.normal)
+    table.cell(camCardTable, 1, 2, breakText, text_color=color.green, text_size=size.normal)
+    
+    // Reversal probability row (RED with directional arrow)
+    string revText = na(camRevProb) ? "–" : revArrow + str.tostring(camRevProb * 100, "#.#") + "%"
+    table.cell(camCardTable, 0, 3, "Reversal ≥0.5:", text_color=color.white, text_size=size.normal)
+    table.cell(camCardTable, 1, 3, revText, text_color=color.red, text_size=size.normal)
+    
+    // Median extension row
+    string extText = na(camExtATR) ? "–" : str.tostring(camExtATR, "#.##") + " ATR"
+    table.cell(camCardTable, 0, 4, "Median Ext:", text_color=color.white, text_size=size.normal)
+    table.cell(camCardTable, 1, 4, extText, text_color=color.yellow, text_size=size.normal)
+    
+    // State row
+    table.cell(camCardTable, 0, 5, "State:", text_color=color.white, text_size=size.normal)
+    table.cell(camCardTable, 1, 5, stateText, text_color=stateColor, text_size=size.normal)
+
+// ========================================
+// PRESET STATUS TABLE (WHAT'S ACTUALLY IN USE)
+// ========================================
+if barstate.islast and showPresetStatus
+    var table presetTable = table.new(position.middle_right, 2, 8, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+
+    // Show PRESET or MANUAL status
+    string statusText = hasPreset ? "PRESET" : "MANUAL"
+    color statusColor = hasPreset ? color.green : color.orange
+
+    table.cell(presetTable, 0, 0, "PRESET STATUS", bgcolor=color.gray, text_color=color.white, text_size=size.normal, text_halign=text.align_center)
+    table.cell(presetTable, 1, 0, autoSymbol + " [" + statusText + "]", bgcolor=statusColor, text_color=color.white, text_size=size.normal, text_halign=text.align_center)
+
+    table.cell(presetTable, 0, 1, "SSL Base:", text_color=color.white, text_size=size.small)
+    table.cell(presetTable, 1, 1, str.tostring(sslBaselineLengthEff), text_color=color.yellow, text_size=size.small)
+
+    table.cell(presetTable, 0, 2, "SSL Len:", text_color=color.white, text_size=size.small)
+    table.cell(presetTable, 1, 2, str.tostring(sslLengthEff), text_color=color.yellow, text_size=size.small)
+
+    table.cell(presetTable, 0, 3, "Exit Len:", text_color=color.white, text_size=size.small)
+    table.cell(presetTable, 1, 3, str.tostring(exitLengthEff), text_color=color.yellow, text_size=size.small)
+
+    table.cell(presetTable, 0, 4, "WAE Sens:", text_color=color.white, text_size=size.small)
+    table.cell(presetTable, 1, 4, str.tostring(waeSensitivityEff), text_color=color.yellow, text_size=size.small)
+
+    table.cell(presetTable, 0, 5, "Vol Low:", text_color=color.white, text_size=size.small)
+    table.cell(presetTable, 1, 5, str.tostring(lowVolThresholdEff, "#.##"), text_color=color.yellow, text_size=size.small)
+
+    table.cell(presetTable, 0, 6, "Vol High:", text_color=color.white, text_size=size.small)
+    table.cell(presetTable, 1, 6, str.tostring(highVolThresholdEff, "#.##"), text_color=color.yellow, text_size=size.small)
+
+    table.cell(presetTable, 0, 7, "Mode:", text_color=color.white, text_size=size.small)
+    table.cell(presetTable, 1, 7, presetComparisonMode ? "COMPARISON" : "PRESET", text_color=presetComparisonMode ? color.orange : color.green, text_size=size.small)
+
+
+
+
+if showConfluenceTable
+    var table confluenceTable = table.new(position.top_center, 5, 7, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+    
+    table.cell(confluenceTable, 0, 0, "Signal", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    table.cell(confluenceTable, 1, 0, "Bull", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    table.cell(confluenceTable, 2, 0, "Bear", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    table.cell(confluenceTable, 3, 0, "Score", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    table.cell(confluenceTable, 4, 0, "Quality", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    
+    // SSL row (synced with ORB: ✓=scored, ◐=confirmation only, ✗=none)
+    table.cell(confluenceTable, 0, 1, "SSL", text_color=color.white, text_size=size.normal)
+    string sslDisplayBull = sslScoreBull >= 1.0 ? "✓" : (sslBullishSimple ? "◐" : "✗")
+    string sslDisplayBear = sslScoreBear >= 1.0 ? "✓" : (sslBearishSimple ? "◐" : "✗")
+    color sslBullColor = sslScoreBull >= 1.0 ? color.green : (sslBullishSimple ? color.yellow : color.gray)
+    color sslBearColor = sslScoreBear >= 1.0 ? color.green : (sslBearishSimple ? color.yellow : color.gray)
+    table.cell(confluenceTable, 1, 1, sslDisplayBull, text_color=sslBullColor, text_size=size.normal)
+    table.cell(confluenceTable, 2, 1, sslDisplayBear, text_color=sslBearColor, text_size=size.normal)
+    
+    // WAE row (synced with ORB: ✓=scored, ◐=confirmation only, ✗=none)
+    table.cell(confluenceTable, 0, 2, "WAE", text_color=color.white, text_size=size.normal)
+    string waeDisplayBull = waeScoreBull >= 1.0 ? "✓" : (waeBullConfirmation ? "◐" : "✗")
+    string waeDisplayBear = waeScoreBear >= 1.0 ? "✓" : (waeBearConfirmation ? "◐" : "✗")
+    color waeBullColor = waeScoreBull >= 1.0 ? color.green : (waeBullConfirmation ? color.yellow : color.gray)
+    color waeBearColor = waeScoreBear >= 1.0 ? color.green : (waeBearConfirmation ? color.yellow : color.gray)
+    table.cell(confluenceTable, 1, 2, waeDisplayBull, text_color=waeBullColor, text_size=size.normal)
+    table.cell(confluenceTable, 2, 2, waeDisplayBear, text_color=waeBearColor, text_size=size.normal)
+    
+    // QQE row (synced with ORB: ✓=scored, ◐=signal only, ✗=none)
+    table.cell(confluenceTable, 0, 3, "QQE", text_color=color.white, text_size=size.normal)
+    string qqeDisplayBull = qqeScoreBull >= 1.0 ? "✓" : (qqeBullSignal ? "◐" : "✗")
+    string qqeDisplayBear = qqeScoreBear >= 1.0 ? "✓" : (qqeBearSignal ? "◐" : "✗")
+    color qqeBullColor = qqeScoreBull >= 1.0 ? color.green : (qqeBullSignal ? color.yellow : color.gray)
+    color qqeBearColor = qqeScoreBear >= 1.0 ? color.green : (qqeBearSignal ? color.yellow : color.gray)
+    table.cell(confluenceTable, 1, 3, qqeDisplayBull, text_color=qqeBullColor, text_size=size.normal)
+    table.cell(confluenceTable, 2, 3, qqeDisplayBear, text_color=qqeBearColor, text_size=size.normal)
+    
+    // VOL row (synced with ORB - shows Z-score with σ)
+    table.cell(confluenceTable, 0, 4, "VOL", text_color=color.white, text_size=size.normal)
+    string volDisplay = enableVolume ? str.tostring(volZ, "#.#") + "σ" : "–"
+    color volDisplayColor = volZ >= 1.0 ? color.green : volZ >= 0.2 ? color.yellow : color.red
+    table.cell(confluenceTable, 1, 4, volDisplay, text_color=enableVolume ? volDisplayColor : color.gray, text_size=size.normal)
+    table.cell(confluenceTable, 2, 4, volDisplay, text_color=enableVolume ? volDisplayColor : color.gray, text_size=size.normal)
+    
+    // IB row
+    table.cell(confluenceTable, 0, 5, "IB", text_color=color.white, text_size=size.normal)
+    table.cell(confluenceTable, 1, 5, ibFormed ? (ibBreakUp ? "↑" : "–") : "◷", text_color=ibBreakUp ? color.green : ibFormed ? color.gray : color.orange, text_size=size.normal)
+    table.cell(confluenceTable, 2, 5, ibFormed ? (ibBreakDown ? "↓" : "–") : "◷", text_color=ibBreakDown ? color.green : ibFormed ? color.gray : color.orange, text_size=size.normal)
+    
+    // Total row (synced with ORB - includes volume in max)
+    table.cell(confluenceTable, 0, 6, "Total", bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.normal)
+    scoreMax = str.tostring((includeIBInConfluence ? 4 : 3) + (enableVolume ? 1 : 0))
+    table.cell(confluenceTable, 1, 6, str.tostring(bullScore) + "/" + scoreMax, bgcolor=color.new(color.gray, 50), text_color=bullScore >= minConfluenceScore ? color.green : color.gray, text_size=size.normal)
+    table.cell(confluenceTable, 2, 6, str.tostring(bearScore) + "/" + scoreMax, bgcolor=color.new(color.gray, 50), text_color=bearScore >= minConfluenceScore ? color.red : color.gray, text_size=size.normal)
+    
+    // Quality status column
+    qualityStatus = "✓"
+    qualityColor = color.green
+    if inLunchHour
+        qualityStatus := "LUNCH"
+        qualityColor := color.orange
+    else if not volumeCondition
+        qualityStatus := "LOW VOL"
+        qualityColor := color.gray
+    else if not volatilityCondition
+        qualityStatus := "LOW Vx"
+        qualityColor := color.gray
+    else if not htfTrendBullish and not htfTrendBearish
+        qualityStatus := "NO HTF"
+        qualityColor := color.gray
+    else if not marketBullish and not marketBearish
+        qualityStatus := "MKT FLAT"
+        qualityColor := color.gray
+    
+    table.cell(confluenceTable, 4, 1, qualityStatus, text_color=qualityColor, text_size=size.normal)
+    table.cell(confluenceTable, 4, 2, "Vol: " + str.tostring(volume/avgVolume, "#.##") + "x", text_color=volumeCondition ? color.green : color.gray, text_size=size.normal)
+    table.cell(confluenceTable, 4, 3, "ATR: " + str.tostring(atrPct/atrPctAvg, "#.##") + "x", text_color=volatilityCondition ? color.green : color.gray, text_size=size.normal)
+
+// Volatility regime display
+    vfText = na(volFactor) ? "n/a" : str.tostring(volFactor, "#.##")
+    vfColor = volState == "LOW" ? color.blue : volState == "NORMAL" ? color.green : volState == "HIGH" ? color.orange : color.red
+    table.cell(confluenceTable, 4, 5, "VF: " + vfText, text_color=vfColor, text_size=size.normal)
+    table.cell(confluenceTable, 4, 6, volState, text_color=vfColor, text_size=size.normal)
+    
+    // Status in Score column
+    string statusText2 = inLongPosition ? "LONG" : inShortPosition ? "SHORT" : "FLAT"
+    if not inMarketHours
+        statusText2 := "CLOSED"
+    else if not inEntryWindow
+        statusText2 := "IB WATCH"
+    else if inLunchHour
+        statusText2 := "LUNCH"
+    else if longConditionsMet and not (inLongPosition or inShortPosition)
+        statusText2 := "LONG READY"
+    else if shortConditionsMet and not (inLongPosition or inShortPosition)
+        statusText2 := "SHORT READY"
+    
+    table.cell(confluenceTable, 3, 4, statusText2, bgcolor=color.new(color.gray, 50), text_color=inLongPosition ? color.green : inShortPosition ? color.red : not inEntryWindow ? color.yellow : longConditionsMet ? color.lime : shortConditionsMet ? color.orange : inLunchHour ? color.orange : not inMarketHours ? color.gray : color.gray, text_size=size.normal)
+
+// POSITION TABLE WITH CLEANUP
+if showPositionInfo and (inLongPosition or inShortPosition)
+    // Delete old table if it exists
+    if not na(positionTable)
+        table.delete(positionTable)
+    
+    // Create new table
+    positionTable := table.new(position.top_center, 2, 8, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+    
+    table.cell(positionTable, 0, 0, "POSITION", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    table.cell(positionTable, 1, 0, "", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    
+    table.cell(positionTable, 0, 1, "Entry:", text_color=color.white, text_size=size.normal)
+    table.cell(positionTable, 1, 1, str.tostring(entryPrice, "#.##"), text_color=color.white, text_size=size.normal)
+    
+    table.cell(positionTable, 0, 2, "Stop:", text_color=color.white, text_size=size.normal)
+    table.cell(positionTable, 1, 2, str.tostring(stopPrice, "#.##"), text_color=color.red, text_size=size.normal)
+    
+    table.cell(positionTable, 0, 3, "Target:", text_color=color.white, text_size=size.normal)
+    table.cell(positionTable, 1, 3, str.tostring(targetPrice, "#.##"), text_color=color.green, text_size=size.normal)
+    
+    table.cell(positionTable, 0, 4, "Shares:", text_color=color.white, text_size=size.normal)
+    table.cell(positionTable, 1, 4, str.tostring(positionSize, "#.#"), text_color=color.white, text_size=size.normal)
+    
+    // RR Used row
+    rrText = na(lastRRUsed) ? "–" : str.tostring(lastRRUsed, "#.#") + ":1"
+    table.cell(positionTable, 0, 5, "RR Used:", text_color=color.white, text_size=size.normal)
+    table.cell(positionTable, 1, 5, rrText, text_color=color.white, text_size=size.normal)
+    
+    // Target ATR row
+    string targetGradeDisplay = "–"
+    color targetGradeColor = color.gray
+    if not na(lastTargetATRs)
+        if lastTargetATRs < 1.2
+            targetGradeDisplay := "A"
+            targetGradeColor := color.green
+        else if lastTargetATRs < 1.8
+            targetGradeDisplay := "B"
+            targetGradeColor := color.lime
+        else if lastTargetATRs < 2.5
+            targetGradeDisplay := "C"
+            targetGradeColor := color.orange
+        else
+            targetGradeDisplay := "D"
+            targetGradeColor := color.red
+    
+    targetATRText = na(lastTargetATRs) ? "–" : str.tostring(lastTargetATRs, "#.#") + " ATR (" + targetGradeDisplay + ")"
+    table.cell(positionTable, 0, 6, "Target:", text_color=color.white, text_size=size.normal)
+    table.cell(positionTable, 1, 6, targetATRText, text_color=targetGradeColor, text_size=size.normal)
+    
+    // P/L row
+    string plText = "–"
+    color plColor = color.gray
+    
+    if inLongPosition and not na(longPnlDollars)
+        plText := "$" + str.tostring(math.abs(longPnlDollars), "#.##")
+        plColor := longPnlDollars >= 0 ? color.green : color.red
+    else if inShortPosition and not na(shortPnlDollars)
+        plText := "$" + str.tostring(math.abs(shortPnlDollars), "#.##")
+        plColor := shortPnlDollars >= 0 ? color.green : color.red
+    
+    table.cell(positionTable, 0, 7, "P/L:", text_color=color.white, text_size=size.normal)
+    table.cell(positionTable, 1, 7, plText, text_color=plColor, text_size=size.normal)
+
+// Explicitly delete table when no position
+else if not na(positionTable)
+    table.delete(positionTable)
+    positionTable := na
+
+// ========================================
+// STOP OPTIONS TABLE
+// ========================================
+var table stopOptionsTable = na
+
+if showStopOptionsTable and (inLongPosition or inShortPosition) and autoSelectStop
+    // Delete old table if exists
+    if not na(stopOptionsTable)
+        table.delete(stopOptionsTable)
+    
+    stopOptionsTable := table.new(position.middle_left, 2, 5, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+    
+    // Header
+    table.cell(stopOptionsTable, 0, 0, "STOP OPTIONS", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    table.cell(stopOptionsTable, 1, 0, "R:R", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    
+    // ATR row
+    atrWinner = lastStopTypeUsed == "ATR" or lastStopTypeUsed == "ATR-Fallback"
+    atrText = na(lastAtrRR) ? "–" : str.tostring(lastAtrRR, "#.#") + ":1" + (atrWinner ? " ←" : "")
+    table.cell(stopOptionsTable, 0, 1, "ATR", text_color=color.white, text_size=size.normal)
+    table.cell(stopOptionsTable, 1, 1, atrText, text_color=atrWinner ? color.green : color.gray, text_size=size.normal)
+    
+    // Swing row
+    swingWinner = str.contains(lastStopTypeUsed, "Swing")
+    swingText = na(lastSwingRR) or lastSwingRR < 0 ? "invalid" : str.tostring(lastSwingRR, "#.#") + ":1" + (swingWinner ? " ←" : "")
+    swingColor = na(lastSwingRR) or lastSwingRR < 0 ? color.red : (swingWinner ? color.green : color.gray)
+    table.cell(stopOptionsTable, 0, 2, "Swing", text_color=color.white, text_size=size.normal)
+    table.cell(stopOptionsTable, 1, 2, swingText, text_color=swingColor, text_size=size.normal)
+    
+    // VWAP row
+    vwapWinner = lastStopTypeUsed == "VWAP"
+    vwapText = na(lastVwapRR) or lastVwapRR < 0 ? "invalid" : str.tostring(lastVwapRR, "#.#") + ":1" + (vwapWinner ? " ←" : "")
+    vwapColor = na(lastVwapRR) or lastVwapRR < 0 ? color.red : (vwapWinner ? color.green : color.gray)
+    table.cell(stopOptionsTable, 0, 3, "VWAP", text_color=color.white, text_size=size.normal)
+    table.cell(stopOptionsTable, 1, 3, vwapText, text_color=vwapColor, text_size=size.normal)
+    
+    // Hybrid row
+    hybridWinner = str.contains(lastStopTypeUsed, "Hybrid")
+    hybridText = na(lastHybridRR) or lastHybridRR < 0 ? "invalid" : str.tostring(lastHybridRR, "#.#") + ":1" + (hybridWinner ? " ←" : "")
+    hybridColor = na(lastHybridRR) or lastHybridRR < 0 ? color.red : (hybridWinner ? color.green : color.gray)
+    table.cell(stopOptionsTable, 0, 4, "Hybrid", text_color=color.white, text_size=size.normal)
+    table.cell(stopOptionsTable, 1, 4, hybridText, text_color=hybridColor, text_size=size.normal)
+
+else if not na(stopOptionsTable)
+    table.delete(stopOptionsTable)
+    stopOptionsTable := na
+
+// ========================================
+// PROFIT TRACKING TABLE
+// ========================================
+if showChartStats and barstate.islast
+    if not na(profitTable)
+        table.delete(profitTable)
+    
+    profitTable := table.new(position.middle_left, 2, 9, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+    
+    // Header
+    table.cell(profitTable, 0, 0, "CHART STATS", bgcolor=color.gray, text_color=color.white, text_size=size.normal)
+    table.cell(profitTable, 1, 0, syminfo.ticker, bgcolor=color.gray, text_color=color.yellow, text_size=size.normal)
+    
+    // Current Position Info (rows 1-2)
+    float openPnL = 0.0
+    string positionText = "FLAT"
+    color positionColor = color.gray
+    
+    if inLongPosition and not na(entryPrice)
+        openPnL := (close - entryPrice) * positionSize
+        positionText := str.tostring(positionSize, "#") + " @ " + str.tostring(entryPrice, "#.##")
+        positionColor := color.green
+    else if inShortPosition and not na(entryPrice)
+        openPnL := (entryPrice - close) * positionSize
+        positionText := str.tostring(positionSize, "#") + " @ " + str.tostring(entryPrice, "#.##")
+        positionColor := color.red
+    
+    // Open P&L
+    table.cell(profitTable, 0, 1, "Open P&L:", text_color=color.white, text_size=size.normal)
+    openPnLText = (inLongPosition or inShortPosition) ? "$" + str.tostring(openPnL, "#.##") : "–"
+    openPnLColor = openPnL >= 0 ? color.green : color.red
+    table.cell(profitTable, 1, 1, openPnLText, text_color=(inLongPosition or inShortPosition) ? openPnLColor : color.gray, text_size=size.normal)
+    
+    // Position
+    table.cell(profitTable, 0, 2, "Position:", text_color=color.white, text_size=size.normal)
+    table.cell(profitTable, 1, 2, positionText, text_color=positionColor, text_size=size.normal)
+    
+    // Total P&L (closed trades)
+    table.cell(profitTable, 0, 3, "Total P&L:", text_color=color.white, text_size=size.normal)
+    table.cell(profitTable, 1, 3, "$" + str.tostring(totalPnL, "#.##"), text_color=totalPnL >= 0 ? color.green : color.red, text_size=size.normal)
+    
+    // Last Trade
+    table.cell(profitTable, 0, 4, "Last Trade:", text_color=color.white, text_size=size.normal)
+    table.cell(profitTable, 1, 4, "$" + str.tostring(lastTradePnL, "#.##"), text_color=lastTradePnL >= 0 ? color.green : color.red, text_size=size.normal)
+    
+    // Wins
+    table.cell(profitTable, 0, 5, "Wins:", text_color=color.white, text_size=size.normal)
+    table.cell(profitTable, 1, 5, str.tostring(winCount), text_color=color.green, text_size=size.normal)
+    
+    // Losses
+    table.cell(profitTable, 0, 6, "Losses:", text_color=color.white, text_size=size.normal)
+    table.cell(profitTable, 1, 6, str.tostring(lossCount), text_color=color.red, text_size=size.normal)
+    
+    // Win Rate
+    totalTrades = winCount + lossCount
+    winRate = totalTrades > 0 ? (winCount / totalTrades) * 100 : 0
+    table.cell(profitTable, 0, 7, "Win Rate:", text_color=color.white, text_size=size.normal)
+    table.cell(profitTable, 1, 7, str.tostring(winRate, "#.#") + "%", text_color=winRate >= 50 ? color.green : color.red, text_size=size.normal)
+    
+    // Best/Worst
+    table.cell(profitTable, 0, 8, "Best/Worst:", text_color=color.white, text_size=size.normal)
+    bestWorstText = "$" + str.tostring(maxWin, "#") + " / $" + str.tostring(math.abs(maxLoss), "#")
+    table.cell(profitTable, 1, 8, bestWorstText, text_color=color.white, text_size=size.normal)
