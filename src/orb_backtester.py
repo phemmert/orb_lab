@@ -80,12 +80,34 @@ except ImportError:
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 SYMBOL_PRESETS = {
-    'AMD': {
+    'PLTR': {
         # SSL
-        'ssl_baseline_length': 40,
+        'ssl_baseline_length': 20,
         'ssl_length': 10,
         # WAE
         'wae_fast_ema': 13,
+        'wae_slow_ema': 27,
+        'wae_bb_length': 20,
+        'wae_sensitivity': 200,
+        # QQE
+        'qqe_rsi1_length': 8,
+        'qqe_rsi1_smoothing': 5,
+        'qqe_rsi2_length': 4,
+        'qqe_rsi2_smoothing': 4,
+        'qqe_bb_length': 25,
+        # Volume
+        'vol_lookback': 12,
+        # Vol thresholds
+        'low_vol_threshold': 0.8,
+        'high_vol_threshold': 1.3,
+        'extreme_vol_threshold': 2.0,
+    },
+    'RKLB': {
+        # SSL
+        'ssl_baseline_length': 20,
+        'ssl_length': 10,
+        # WAE
+        'wae_fast_ema': 12,
         'wae_slow_ema': 26,
         'wae_bb_length': 20,
         'wae_sensitivity': 200,
@@ -102,15 +124,15 @@ SYMBOL_PRESETS = {
         'high_vol_threshold': 1.3,
         'extreme_vol_threshold': 2.0,
     },
-    'GOOGL': {
+    'TSLA': {
         # SSL
-        'ssl_baseline_length': 50,
+        'ssl_baseline_length': 20,
         'ssl_length': 10,
         # WAE
-        'wae_fast_ema': 15,
-        'wae_slow_ema': 30,
+        'wae_fast_ema': 14,
+        'wae_slow_ema': 29,
         'wae_bb_length': 20,
-        'wae_sensitivity': 325,
+        'wae_sensitivity': 200,
         # QQE
         'qqe_rsi1_length': 8,
         'qqe_rsi1_smoothing': 5,

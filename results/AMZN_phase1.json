@@ -1,0 +1,63 @@
+{
+  "symbol": "AMZN",
+  "phase": 1,
+  "phase_name": "Exit Geometry",
+  "optimization_date": "2026-02-08T16:12:24.942198",
+  "optimizer_version": "v3_phased",
+  "objective": "robust",
+  "train_period": {
+    "start": "2025-02-01",
+    "end": "2025-09-30"
+  },
+  "test_period": {
+    "start": "2025-10-01",
+    "end": "2026-01-27"
+  },
+  "n_trials": 200,
+  "best_score": -0.6707414841901764,
+  "best_params": {
+    "break_even_rr": 0.4,
+    "profit_target_rr": 2.0,
+    "trailing_stop_distance": 1.1,
+    "ema_tighten_zone": 0.5,
+    "tightened_trail_distance": 0.2,
+    "ema_confirmation_bars": 1,
+    "atr_stop_mult": 1.75,
+    "min_stop_atr": 0.1,
+    "swing_lookback": 3,
+    "min_acceptable_rr": 1.5,
+    "ema_period": 8,
+    "vwap_stop_distance": 0.5,
+    "max_target_atr": 3.5,
+    "breakout_threshold_mult": 0.125,
+    "min_body_strength": 0.7,
+    "trading_end_minutes": 660
+  },
+  "fixed_params": {
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "use_ssl_momentum": true,
+    "use_wae_acceleration": true,
+    "use_qqe_momentum": true,
+    "trading_start_minutes": 570,
+    "enable_confluence": false,
+    "min_confluence": 0,
+    "skip_low_vol_c_grades": false
+  },
+  "train_results": {
+    "total_trades": 39,
+    "win_rate": 48.0,
+    "total_r": 0.9217604836115921,
+    "avg_r_per_trade": 0.02363488419516903,
+    "profit_factor": 1.1340978628094833,
+    "max_drawdown_r": 5.889004964553298
+  },
+  "test_results": {
+    "total_trades": 100,
+    "win_rate": 54.666666666666664,
+    "total_r": 16.96863604600921,
+    "avg_r_per_trade": 0.16968636046009208,
+    "profit_factor": 1.2551231295561023,
+    "max_drawdown_r": 6.644385012272244
+  }
+}

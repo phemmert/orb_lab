@@ -1,0 +1,54 @@
+{
+  "symbol": "MARA",
+  "state": "no_edge",
+  "started_at": "2026-02-09T11:13:33.343379",
+  "current_phase": 1,
+  "phases": {
+    "1": {
+      "name": "Exit Geometry",
+      "state": "complete",
+      "started_at": "2026-02-09T11:13:33.343394",
+      "score": -Infinity,
+      "train": {
+        "total_trades": 55,
+        "win_rate": 51.06382978723404,
+        "total_r": 9.560934563013518,
+        "avg_r_per_trade": 0.17383517387297306,
+        "profit_factor": 1.5336445437067618,
+        "max_drawdown_r": 6.717559053958083
+      },
+      "test": {
+        "total_trades": 147,
+        "win_rate": 37.391304347826086,
+        "total_r": -15.561294689478068,
+        "avg_r_per_trade": -0.10585914754746985,
+        "profit_factor": 0.6992226761686519,
+        "max_drawdown_r": 27.845423108430573
+      },
+      "trials_complete": 200,
+      "trials_total": 200,
+      "best_so_far": -Infinity,
+      "completed_at": "2026-02-09T12:01:46.722168",
+      "params": {
+        "break_even_rr": 0.5,
+        "profit_target_rr": 3.0,
+        "trailing_stop_distance": 1.7000000000000002,
+        "ema_tighten_zone": 0.4,
+        "tightened_trail_distance": 0.25,
+        "ema_confirmation_bars": 1,
+        "atr_stop_mult": 1.5,
+        "min_stop_atr": 0.25,
+        "swing_lookback": 6,
+        "min_acceptable_rr": 1.75,
+        "ema_period": 7,
+        "vwap_stop_distance": 0.5,
+        "max_target_atr": 3.75,
+        "breakout_threshold_mult": 0.07500000000000001,
+        "min_body_strength": 0.3,
+        "trading_end_minutes": 615
+      }
+    }
+  },
+  "error": "Circuit breaker: Phase 1 score: -inf, Test R: -15.6",
+  "updated_at": "2026-02-09T12:01:46.723383"
+}

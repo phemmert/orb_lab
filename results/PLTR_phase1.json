@@ -1,0 +1,63 @@
+{
+  "symbol": "PLTR",
+  "phase": 1,
+  "phase_name": "Exit Geometry",
+  "optimization_date": "2026-02-09T12:36:54.043965",
+  "optimizer_version": "v3_phased",
+  "objective": "robust",
+  "train_period": {
+    "start": "2025-02-01",
+    "end": "2025-09-30"
+  },
+  "test_period": {
+    "start": "2025-10-01",
+    "end": "2026-01-27"
+  },
+  "n_trials": 200,
+  "best_score": 4.065051121730651,
+  "best_params": {
+    "break_even_rr": 0.5,
+    "profit_target_rr": 2.25,
+    "trailing_stop_distance": 1.9000000000000001,
+    "ema_tighten_zone": 0.2,
+    "tightened_trail_distance": 0.4,
+    "ema_confirmation_bars": 3,
+    "atr_stop_mult": 2.0,
+    "min_stop_atr": 0.25,
+    "swing_lookback": 3,
+    "min_acceptable_rr": 1.5,
+    "ema_period": 12,
+    "vwap_stop_distance": 0.30000000000000004,
+    "max_target_atr": 4.0,
+    "breakout_threshold_mult": 0.125,
+    "min_body_strength": 0.4,
+    "trading_end_minutes": 690
+  },
+  "fixed_params": {
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "use_ssl_momentum": true,
+    "use_wae_acceleration": true,
+    "use_qqe_momentum": true,
+    "trading_start_minutes": 570,
+    "enable_confluence": false,
+    "min_confluence": 0,
+    "skip_low_vol_c_grades": false
+  },
+  "train_results": {
+    "total_trades": 51,
+    "win_rate": 62.16216216216216,
+    "total_r": 18.75937510788089,
+    "avg_r_per_trade": 0.36783088446825274,
+    "profit_factor": 2.430977995883948,
+    "max_drawdown_r": 3.0
+  },
+  "test_results": {
+    "total_trades": 176,
+    "win_rate": 37.5,
+    "total_r": 27.970903324229134,
+    "avg_r_per_trade": 0.1589255870694837,
+    "profit_factor": 1.2674830735209688,
+    "max_drawdown_r": 12.764350817154982
+  }
+}

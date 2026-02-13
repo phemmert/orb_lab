@@ -1,0 +1,148 @@
+{
+  "symbol": "RKLB",
+  "state": "complete",
+  "started_at": "2026-02-09T11:13:35.486362",
+  "current_phase": "validation",
+  "phases": {
+    "1": {
+      "name": "Exit Geometry",
+      "state": "complete",
+      "started_at": "2026-02-09T11:13:35.486378",
+      "score": 3.7770130708567984,
+      "train": {
+        "total_trades": 38,
+        "win_rate": 60.0,
+        "total_r": 8.470159182063618,
+        "avg_r_per_trade": 0.22289892584377943,
+        "profit_factor": 1.7205403985140795,
+        "max_drawdown_r": 3.0
+      },
+      "test": {
+        "total_trades": 127,
+        "win_rate": 51.89873417721519,
+        "total_r": 28.65179805923428,
+        "avg_r_per_trade": 0.22560470912782898,
+        "profit_factor": 1.4661524274219884,
+        "max_drawdown_r": 6.190622384632864
+      },
+      "trials_complete": 200,
+      "trials_total": 200,
+      "best_so_far": 3.777,
+      "completed_at": "2026-02-09T12:27:50.640563",
+      "params": {
+        "break_even_rr": 0.4,
+        "profit_target_rr": 1.5,
+        "trailing_stop_distance": 1.0,
+        "ema_tighten_zone": 0.30000000000000004,
+        "tightened_trail_distance": 0.2,
+        "ema_confirmation_bars": 2,
+        "atr_stop_mult": 2.25,
+        "min_stop_atr": 0.25,
+        "swing_lookback": 3,
+        "min_acceptable_rr": 1.25,
+        "ema_period": 11,
+        "vwap_stop_distance": 0.30000000000000004,
+        "max_target_atr": 3.25,
+        "breakout_threshold_mult": 0.05,
+        "min_body_strength": 0.5,
+        "trading_end_minutes": 675
+      }
+    },
+    "2": {
+      "name": "Volatility Regime",
+      "state": "complete",
+      "started_at": "2026-02-09T12:27:50.641618",
+      "score": 3.7770130708567984,
+      "train": {
+        "total_trades": 38,
+        "win_rate": 60.0,
+        "total_r": 8.470159182063618,
+        "avg_r_per_trade": 0.22289892584377943,
+        "profit_factor": 1.7205403985140795,
+        "max_drawdown_r": 3.0
+      },
+      "test": {
+        "total_trades": 127,
+        "win_rate": 51.89873417721519,
+        "total_r": 28.65179805923428,
+        "avg_r_per_trade": 0.22560470912782898,
+        "profit_factor": 1.4661524274219884,
+        "max_drawdown_r": 6.190622384632864
+      },
+      "trials_complete": 150,
+      "trials_total": 150,
+      "best_so_far": 3.777,
+      "completed_at": "2026-02-09T13:24:23.445852",
+      "params": {
+        "low_vol_threshold": 0.8,
+        "high_vol_threshold": 1.3,
+        "extreme_vol_threshold": 2.1,
+        "skip_low_vol_c_grades": false,
+        "low_vol_min_rr": 2.25
+      }
+    },
+    "3": {
+      "name": "Confluence Gating",
+      "state": "complete",
+      "started_at": "2026-02-09T13:24:23.446878",
+      "score": 3.7770130708567984,
+      "train": {
+        "total_trades": 38,
+        "win_rate": 60.0,
+        "total_r": 8.470159182063618,
+        "avg_r_per_trade": 0.22289892584377943,
+        "profit_factor": 1.7205403985140795,
+        "max_drawdown_r": 3.0
+      },
+      "test": {
+        "total_trades": 127,
+        "win_rate": 51.89873417721519,
+        "total_r": 28.65179805923428,
+        "avg_r_per_trade": 0.22560470912782898,
+        "profit_factor": 1.4661524274219884,
+        "max_drawdown_r": 6.190622384632864
+      },
+      "trials_complete": 75,
+      "trials_total": 75,
+      "best_so_far": 3.777,
+      "completed_at": "2026-02-09T15:54:15.823714",
+      "params": {
+        "min_confluence": 1
+      }
+    },
+    "4": {
+      "name": "Boolean Polish",
+      "state": "complete",
+      "started_at": "2026-02-09T15:54:15.824746",
+      "score": 10.0,
+      "train": {
+        "total_trades": 38,
+        "win_rate": 60.0,
+        "total_r": 8.470159182063618,
+        "avg_r_per_trade": 0.22289892584377943,
+        "profit_factor": 1.7205403985140795,
+        "max_drawdown_r": 3.0
+      },
+      "test": {
+        "total_trades": 127,
+        "win_rate": 51.89873417721519,
+        "total_r": 28.65179805923428,
+        "avg_r_per_trade": 0.22560470912782898,
+        "profit_factor": 1.4661524274219884,
+        "max_drawdown_r": 6.190622384632864
+      },
+      "trials_complete": 50,
+      "trials_total": 50,
+      "best_so_far": 10.0,
+      "completed_at": "2026-02-09T17:36:14.255099",
+      "params": {
+        "use_adaptive_be": false,
+        "use_ema_exit": true,
+        "use_aggressive_trailing": true
+      }
+    }
+  },
+  "error": null,
+  "updated_at": "2026-02-09T17:38:12.725520",
+  "completed_at": "2026-02-09T17:38:12.725513"
+}

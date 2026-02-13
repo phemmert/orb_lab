@@ -41,6 +41,7 @@ from orb_settings_export import (
     generate_resolution_lines, minutes_to_time,
     PRESET_FILE_PATH
 )
+from history_recovery import render_history_tab
 
 # =====================================================================
 # PAGE CONFIG
@@ -53,9 +54,24 @@ st.set_page_config(
 )
 
 # Preset symbols
-PRESET_SYMBOLS = ['AMD', 'NVDA', 'TSLA', 'AAPL', 'GOOGL', 'PLTR', 'META', 'MSFT']
 RESULTS_DIR = os.path.join(PROJECT_ROOT, 'results')
 os.makedirs(RESULTS_DIR, exist_ok=True)
+
+
+def get_known_symbols():
+    """Build symbol list from results folder + session state."""
+    symbols = set()
+    # Scan results for any symbol that has been optimized
+    if os.path.exists(RESULTS_DIR):
+        for fname in os.listdir(RESULTS_DIR):
+            if fname.endswith('_phase1.json') or fname.endswith('_FINAL_validation.json'):
+                sym = fname.split('_')[0]
+                if sym.isalpha() and len(sym) <= 5:
+                    symbols.add(sym.upper())
+    # Add any custom symbols from session state
+    if 'custom_symbols' in st.session_state:
+        symbols.update(st.session_state['custom_symbols'])
+    return sorted(symbols) if symbols else ['AMD']
 
 
 # =====================================================================
@@ -178,14 +194,18 @@ def display_metrics_comparison(train, test, label_train="Training", label_test="
 
 def delete_optuna_study(symbol, phase):
     """Delete an Optuna study if it exists."""
-    storage_path = os.path.join(PROJECT_ROOT, 'orb_optuna_v3.db')
-    storage = f'sqlite:///{storage_path}'
     study_name = f'ORB_{symbol}_phase{phase}_v3'
-    try:
-        optuna.delete_study(study_name=study_name, storage=storage)
-        return True
-    except KeyError:
-        return False
+    # Check shared DB first, then legacy
+    for db_name in ['orb_optuna_shared.db', 'orb_optuna_v3.db']:
+        storage_path = os.path.join(PROJECT_ROOT, db_name)
+        if os.path.exists(storage_path):
+            storage = f'sqlite:///{storage_path}'
+            try:
+                optuna.delete_study(study_name=study_name, storage=storage)
+                return True
+            except KeyError:
+                pass
+    return False
 
 
 # =====================================================================
@@ -197,24 +217,31 @@ with st.sidebar:
     st.divider()
 
     # Symbol selection
-    symbol_option = st.selectbox(
+    known = get_known_symbols()
+    symbol = st.selectbox(
         "Symbol",
-        options=PRESET_SYMBOLS + ['Custom...'],
+        options=known,
         index=0
     )
-    if symbol_option == 'Custom...':
-        symbol = st.text_input("Enter symbol", value="SPY").upper()
-    else:
-        symbol = symbol_option
+    new_sym = st.text_input("Add symbol", placeholder="e.g. SOFI", key="add_sym")
+    if new_sym:
+        new_sym = new_sym.strip().upper()
+        if new_sym and new_sym not in known:
+            if 'custom_symbols' not in st.session_state:
+                st.session_state['custom_symbols'] = set()
+            st.session_state['custom_symbols'].add(new_sym)
+            st.rerun()
+        elif new_sym in known:
+            symbol = new_sym
 
     st.divider()
 
     # Date ranges
     st.subheader("Date Ranges")
-    train_start = st.date_input("Train Start", value=date(2025, 2, 1))
-    train_end = st.date_input("Train End", value=date(2025, 9, 30))
-    test_start = st.date_input("Test Start", value=date(2025, 10, 1))
-    test_end = st.date_input("Test End", value=date(2026, 1, 27))
+    train_start = st.date_input("Train Start", value=date(2025, 2, 1), key="train_start")
+    train_end = st.date_input("Train End", value=date(2025, 9, 30), key="train_end")
+    test_start = st.date_input("Test Start", value=date(2025, 10, 1), key="test_start")
+    test_end = st.date_input("Test End", value=date(2026, 1, 27), key="test_end")
 
     # Date validation
     date_error = None
@@ -271,11 +298,19 @@ with st.sidebar:
 
     # Optuna dashboard
     st.subheader("Optuna Dashboard")
-    db_path = os.path.join(PROJECT_ROOT, 'orb_optuna_v3.db')
-    if os.path.exists(db_path):
-        st.code(f"optuna-dashboard sqlite:///{db_path}", language="bash")
+
+    # Shared DB (all batch symbols) is the primary
+    shared_db = os.path.join(PROJECT_ROOT, 'orb_optuna_shared.db')
+    legacy_db = os.path.join(PROJECT_ROOT, 'orb_optuna_v3.db')
+
+    if os.path.exists(shared_db):
+        st.code(f"optuna-dashboard sqlite:///{shared_db}", language="bash")
+        st.caption("All batch symbols in one dashboard.")
+    elif os.path.exists(legacy_db):
+        st.code(f"optuna-dashboard sqlite:///{legacy_db}", language="bash")
+        st.caption("Legacy DB (AMD only).")
     else:
-        st.caption("No database yet")
+        st.caption("No Optuna databases yet")
 
 
 # =====================================================================
@@ -284,8 +319,8 @@ with st.sidebar:
 
 st.title(f"🔬 ORB Lab: {symbol}")
 
-tab_optimize, tab_validate, tab_robustness, tab_compare, tab_settings, tab_batch = st.tabs([
-    "⚡ Optimize", "✅ Validate", "🛡️ Robustness", "📊 Compare", "📋 Settings", "🚀 Batch"
+tab_optimize, tab_validate, tab_robustness, tab_compare, tab_settings, tab_batch, tab_history = st.tabs([
+    "⚡ Optimize", "✅ Validate", "🛡️ Robustness", "📊 Compare", "📋 Settings", "🚀 Batch", "📜 History"
 ])
 
 
@@ -1189,7 +1224,7 @@ with tab_settings:
         st.subheader("🌲 Pine Script Preset Block")
         st.caption(
             "Generates the preset file for AHK injection. "
-            "Hit the button below, then press **F2** in TradingView."
+            "Hit the button below, then press **F8** in TradingView."
         )
 
         # Find all validated symbols
@@ -1211,7 +1246,7 @@ with tab_settings:
 
             with col_write:
                 if selected_syms and st.button(
-                    "🚀 Write Preset File (F2 Ready)",
+                    "🚀 Write Preset File (F8 Ready)",
                     type="primary", key="write_preset"
                 ):
                     try:
@@ -1221,7 +1256,7 @@ with tab_settings:
                         st.success(
                             f"✅ Written to: `{result['path']}`\n\n"
                             f"Symbols: {', '.join(result['symbols'])}\n\n"
-                            f"**Now press F2 in TradingView to inject!**"
+                            f"**Now press F8 in TradingView to inject!**"
                         )
                         st.session_state['last_preset_block'] = result['block_text']
                     except Exception as e:
@@ -1313,15 +1348,72 @@ with tab_batch:
     )
 
     # --- Symbol Selection ---
-    all_symbols = ['AMD', 'NVDA', 'TSLA', 'AAPL', 'GOOGL', 'PLTR', 'META',
-                   'MSFT', 'AMZN', 'NFLX', 'SPY', 'QQQ', 'SOFI', 'COIN', 'MARA']
+    known_syms = get_known_symbols()
+
+    batch_add = st.text_input(
+        "Add symbols (comma separated)",
+        placeholder="e.g. NVDA, TSLA, GOOGL, META",
+        key="batch_add_syms"
+    )
+    if batch_add:
+        for s in batch_add.split(','):
+            s = s.strip().upper()
+            if s and s not in known_syms:
+                if 'custom_symbols' not in st.session_state:
+                    st.session_state['custom_symbols'] = set()
+                st.session_state['custom_symbols'].add(s)
+        known_syms = get_known_symbols()
 
     batch_symbols = st.multiselect(
         "Symbols to optimize",
-        options=all_symbols,
-        default=['NVDA', 'GOOGL', 'TSLA', 'META'],
+        options=known_syms,
+        default=[],
         key="batch_symbols"
     )
+
+    # --- Beta Pre-Filter ---
+    if batch_symbols and st.button("🔍 Check Beta", key="check_beta",
+                                    help="Fetches beta from Yahoo Finance. "
+                                         "Beta measures volatility vs S&P 500. "
+                                         "ORB works best with beta > 1.5 (high intraday range). "
+                                         "Beta < 1.5 = stock may not move enough for profitable R-multiples."):
+        try:
+            import yfinance as yf
+            beta_data = []
+            for sym in batch_symbols:
+                try:
+                    info = yf.Ticker(sym).info
+                    beta = info.get('beta', None)
+                    avg_vol = info.get('averageVolume', 0)
+                    price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                    beta_data.append({
+                        'Symbol': sym,
+                        'Beta': f"{beta:.2f}" if beta else "N/A",
+                        'Avg Volume': f"{avg_vol:,.0f}" if avg_vol else "N/A",
+                        'Price': f"${price:.2f}" if price else "N/A",
+                        'ORB Fit': '✅ Good' if beta and beta >= 1.5
+                                   else '⚠️ Marginal' if beta and beta >= 1.2
+                                   else '🚫 Low beta' if beta
+                                   else '❓ Unknown',
+                    })
+                except Exception:
+                    beta_data.append({
+                        'Symbol': sym, 'Beta': 'Error', 'Avg Volume': '—',
+                        'Price': '—', 'ORB Fit': '❓ Unknown',
+                    })
+
+            df_beta = pd.DataFrame(beta_data)
+            st.dataframe(df_beta, use_container_width=True, hide_index=True)
+
+            low_beta = [r['Symbol'] for r in beta_data
+                        if r.get('ORB Fit', '').startswith('🚫')]
+            if low_beta:
+                st.warning(
+                    f"**Low beta warning:** {', '.join(low_beta)} may not have enough "
+                    f"intraday range for ORB. Consider removing to save compute time."
+                )
+        except ImportError:
+            st.error("yfinance not installed. Run: `pip install yfinance`")
 
     col_workers, _ = st.columns(2)
     with col_workers:
@@ -1356,70 +1448,114 @@ with tab_batch:
     st.divider()
 
     # --- Launch Button ---
-    if batch_symbols and st.button(
-        f"🚀 Launch {len(batch_symbols)} Workers",
-        type="primary", key="launch_batch"
-    ):
+    # File-based lock to prevent double-launch (survives Streamlit reruns)
+    batch_lock_path = os.path.join(RESULTS_DIR, '_batch_running.lock')
+    batch_running = os.path.exists(batch_lock_path)
+
+    if batch_running:
+        col_status, col_reset = st.columns([3, 1])
+        with col_status:
+            st.info("Batch is running — monitor progress below.")
+        with col_reset:
+            if st.button("🔄 Reset Batch", key="reset_batch"):
+                if os.path.exists(batch_lock_path):
+                    os.remove(batch_lock_path)
+                st.session_state.pop('_batch_launch_requested', None)
+                st.rerun()
+
+    def _launch_batch_workers():
+        """on_click callback — runs ONCE per click, BEFORE any rerun.
+        ALL subprocess launching happens here to eliminate race conditions."""
+
+        # Absolute guard — if lock file exists, do nothing
+        if os.path.exists(batch_lock_path):
+            return
+
+        syms = st.session_state.get('batch_symbols', [])
+        if not syms:
+            return
+
+        # Write lock file FIRST
+        with open(batch_lock_path, 'w') as f:
+            json.dump({'launched_at': datetime.now().isoformat(),
+                       'symbols': syms}, f)
+
+        st.session_state['batch_launched_symbols'] = syms
+
         # Clear old status files
-        for sym in batch_symbols:
+        for sym in syms:
             status_path = os.path.join(RESULTS_DIR, f'{sym}_batch_status.json')
             if os.path.exists(status_path):
                 os.remove(status_path)
 
-        # Build the worker command
-        worker_script = os.path.join(PROJECT_ROOT, 'batch_worker.py')
+        # Read trial counts from session state
+        t1 = st.session_state.get('batch_t1', 200)
+        t2 = st.session_state.get('batch_t2', 150)
+        t3 = st.session_state.get('batch_t3', 100)
+        t4 = st.session_state.get('batch_t4', 50)
 
-        # Launch processes in batches of max_workers
-        launched = []
-        for i, sym in enumerate(batch_symbols):
+        # Launch worker processes
+        worker_script = os.path.join(PROJECT_ROOT, 'batch_worker.py')
+        pids = {}
+        for i, sym in enumerate(syms):
             cmd = [
                 sys.executable, worker_script,
                 '--symbol', sym,
-                '--trials-p1', str(batch_t1),
-                '--trials-p2', str(batch_t2),
-                '--trials-p3', str(batch_t3),
-                '--trials-p4', str(batch_t4),
-                '--train-start', str(train_start),
-                '--train-end', str(train_end),
-                '--test-start', str(test_start),
-                '--test-end', str(test_end),
+                '--trials-p1', str(t1),
+                '--trials-p2', str(t2),
+                '--trials-p3', str(t3),
+                '--trials-p4', str(t4),
+                '--train-start', str(st.session_state.get('train_start', '')),
+                '--train-end', str(st.session_state.get('train_end', '')),
+                '--test-start', str(st.session_state.get('test_start', '')),
+                '--test-end', str(st.session_state.get('test_end', '')),
             ]
 
-            # Create log file for each worker
             log_dir = os.path.join(RESULTS_DIR, 'batch_logs')
             os.makedirs(log_dir, exist_ok=True)
-            log_file = open(os.path.join(log_dir, f'{sym}_batch.log'), 'w')
+            log_file = open(os.path.join(log_dir, f'{sym}_batch.log'), 'w', encoding='utf-8')
+
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+            env['PYTHONUNBUFFERED'] = '1'
 
             proc = subprocess.Popen(
                 cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 cwd=PROJECT_ROOT,
+                env=env,
             )
-            launched.append((sym, proc, log_file))
+            pids[sym] = proc.pid
 
-            # Stagger launches slightly to avoid Optuna DB contention
-            if i < len(batch_symbols) - 1:
+            if i < len(syms) - 1:
                 time.sleep(1)
 
-        # Store PIDs in session state
-        st.session_state['batch_pids'] = {
-            sym: proc.pid for sym, proc, _ in launched
-        }
-        st.session_state['batch_launched'] = True
-        st.session_state['batch_symbols'] = batch_symbols
+        st.session_state['batch_pids'] = pids
 
-        st.success(
-            f"Launched {len(launched)} workers: "
-            f"{', '.join(batch_symbols)}"
+    if batch_symbols and not batch_running:
+        st.button(
+            f"🚀 Launch {len(batch_symbols)} Workers",
+            type="primary", key="launch_batch",
+            on_click=_launch_batch_workers,
         )
+
 
     # --- Status Dashboard ---
     st.divider()
     st.subheader("📊 Batch Status")
 
-    # Determine which symbols to monitor
-    monitor_symbols = st.session_state.get('batch_symbols', batch_symbols)
+    # Determine which symbols to monitor (session state, lock file, or current selection)
+    monitor_symbols = st.session_state.get('batch_launched_symbols', None)
+    if not monitor_symbols and os.path.exists(batch_lock_path):
+        try:
+            with open(batch_lock_path, 'r') as f:
+                lock_data = json.load(f)
+            monitor_symbols = lock_data.get('symbols', batch_symbols)
+        except Exception:
+            monitor_symbols = batch_symbols
+    if not monitor_symbols:
+        monitor_symbols = batch_symbols
 
     # Auto-refresh
     auto_refresh = st.checkbox("Auto-refresh (every 5s)", value=True, key="batch_refresh")
@@ -1453,6 +1589,9 @@ with tab_batch:
                 # Header with state indicator
                 if state == 'complete':
                     st.success(f"**{sym}** ✅ Complete")
+                elif state == 'no_edge':
+                    st.error(f"**{sym}** 🚫 No Edge Found")
+                    st.caption(status.get('error', ''))
                 elif state == 'error':
                     st.error(f"**{sym}** ❌ Error")
                     all_complete = False
@@ -1478,7 +1617,15 @@ with tab_batch:
                                 f"Train: {train_r:.1f}R | Test: {test_r:.1f}R"
                             )
                         elif ph_state == 'running':
-                            st.caption(f"P{p} ⏳ Running...")
+                            trials_done = ph.get('trials_complete', 0)
+                            trials_total = ph.get('trials_total', '?')
+                            best_so_far = ph.get('best_so_far')
+                            progress_str = f"P{p} ⏳ Trial {trials_done}/{trials_total}"
+                            if best_so_far is not None:
+                                progress_str += f" | Best: {best_so_far:.3f}"
+                            st.caption(progress_str)
+                            if isinstance(trials_total, int) and trials_total > 0:
+                                st.progress(min(trials_done / trials_total, 1.0))
                         elif ph_state == 'error':
                             st.caption(f"P{p} ❌ {ph.get('error', 'unknown')}")
 
@@ -1504,13 +1651,41 @@ with tab_batch:
                 st.info(f"**{sym}** — Waiting to start...")
                 all_complete = False
 
-    # Auto-refresh mechanism
+    # --- Batch Log Viewer ---
+    st.divider()
+    st.subheader("📝 Worker Logs")
+    log_dir = os.path.join(RESULTS_DIR, 'batch_logs')
+    if os.path.exists(log_dir):
+        log_files = sorted([f.replace('_batch.log', '') for f in os.listdir(log_dir)
+                           if f.endswith('_batch.log')])
+        if log_files:
+            log_symbol = st.selectbox("Symbol", options=log_files, key="log_viewer_sym")
+            log_path = os.path.join(log_dir, f'{log_symbol}_batch.log')
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                        lines = f.read().strip().split('\n')
+                    if lines and lines[0]:
+                        st.code('\n'.join(lines[-80:]), language="text")
+                    else:
+                        st.caption("Log is empty.")
+                except PermissionError:
+                    st.caption("Log file is locked — try again in a moment.")
+        else:
+            st.caption("No log files yet.")
+
+    # Auto-refresh mechanism (AFTER log viewer so it renders first)
     if auto_refresh and any_running:
         time.sleep(5)
         st.rerun()
 
     # Summary when complete
-    if all_complete and monitor_symbols and st.session_state.get('batch_launched'):
+    if all_complete and monitor_symbols and batch_running:
+        # Remove lock file — batch is done
+        if os.path.exists(batch_lock_path):
+            os.remove(batch_lock_path)
+        st.session_state['batch_launched'] = False
+
         st.divider()
         st.success(f"🎉 All {len(monitor_symbols)} symbols complete!")
         st.caption("Head to the **Compare** tab to see cross-symbol results, "
@@ -1544,30 +1719,13 @@ with tab_batch:
                     df[col] = df[col].apply(lambda x: f"{x:.1f}%" if x else "—")
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # --- Batch Log Viewer ---
-    st.divider()
-    st.subheader("📝 Worker Logs")
-    log_dir = os.path.join(RESULTS_DIR, 'batch_logs')
-    if os.path.exists(log_dir):
-        log_symbol = st.selectbox(
-            "View log for",
-            options=monitor_symbols,
-            key="log_viewer_sym"
-        )
-        log_path = os.path.join(log_dir, f'{log_symbol}_batch.log')
-        if os.path.exists(log_path):
-            with open(log_path, 'r') as f:
-                log_content = f.read()
-            if log_content:
-                with st.expander(f"{log_symbol} log (last 100 lines)", expanded=False):
-                    lines = log_content.strip().split('\n')
-                    st.code('\n'.join(lines[-100:]), language="text")
-            else:
-                st.caption("Log is empty — worker may still be starting.")
-        else:
-            st.caption("No log file yet.")
-    else:
-        st.caption("No batch runs yet.")
+
+# =====================================================================
+# TAB 7: HISTORY & RECOVERY
+# =====================================================================
+
+with tab_history:
+    render_history_tab(RESULTS_DIR)
 
 
 # =====================================================================
@@ -1575,4 +1733,4 @@ with tab_batch:
 # =====================================================================
 
 st.divider()
-st.caption("ORB Lab v2.0 | Phased Optimizer + Robustness Suite + Batch Runner | Built with Streamlit")
+st.caption("ORB Lab v2.1 | Phased Optimizer + Robustness Suite + Batch Runner + History Recovery | Built with Streamlit")

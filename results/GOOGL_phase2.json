@@ -1,0 +1,67 @@
+{
+  "symbol": "GOOGL",
+  "phase": 2,
+  "phase_name": "Volatility Regime",
+  "optimization_date": "2026-02-08T16:27:54.070425",
+  "optimizer_version": "v3_phased",
+  "objective": "robust",
+  "train_period": {
+    "start": "2025-02-01",
+    "end": "2025-09-30"
+  },
+  "test_period": {
+    "start": "2025-10-01",
+    "end": "2026-01-27"
+  },
+  "n_trials": 150,
+  "best_score": -4.080228083981013,
+  "best_params": {
+    "low_vol_threshold": 0.8,
+    "high_vol_threshold": 1.3,
+    "extreme_vol_threshold": 2.4000000000000004,
+    "skip_low_vol_c_grades": true,
+    "low_vol_min_rr": 2.5
+  },
+  "fixed_params": {
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "use_ssl_momentum": true,
+    "use_wae_acceleration": true,
+    "use_qqe_momentum": true,
+    "trading_start_minutes": 570,
+    "enable_confluence": false,
+    "min_confluence": 0,
+    "break_even_rr": 0.6000000000000001,
+    "profit_target_rr": 2.75,
+    "trailing_stop_distance": 1.2000000000000002,
+    "ema_tighten_zone": 0.25,
+    "tightened_trail_distance": 0.45,
+    "ema_confirmation_bars": 1,
+    "atr_stop_mult": 1.5,
+    "min_stop_atr": 0.15000000000000002,
+    "swing_lookback": 5,
+    "min_acceptable_rr": 1.75,
+    "ema_period": 8,
+    "vwap_stop_distance": 0.4,
+    "max_target_atr": 3.5,
+    "breakout_threshold_mult": 0.07500000000000001,
+    "min_body_strength": 0.7,
+    "trading_end_minutes": 600
+  },
+  "train_results": {
+    "total_trades": 31,
+    "win_rate": 48.0,
+    "total_r": 2.3689566954008803,
+    "avg_r_per_trade": 0.07641795791615742,
+    "profit_factor": 1.2327997534336625,
+    "max_drawdown_r": 6.153902951171967
+  },
+  "test_results": {
+    "total_trades": 44,
+    "win_rate": 35.8974358974359,
+    "total_r": 2.8685728337765894,
+    "avg_r_per_trade": 0.06519483713128613,
+    "profit_factor": 1.2824644605162163,
+    "max_drawdown_r": 6.0
+  }
+}

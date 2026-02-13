@@ -1,0 +1,63 @@
+{
+  "symbol": "NVDA",
+  "phase": 1,
+  "phase_name": "Exit Geometry",
+  "optimization_date": "2026-02-08T16:25:26.582670",
+  "optimizer_version": "v3_phased",
+  "objective": "robust",
+  "train_period": {
+    "start": "2025-02-01",
+    "end": "2025-09-30"
+  },
+  "test_period": {
+    "start": "2025-10-01",
+    "end": "2026-01-27"
+  },
+  "n_trials": 200,
+  "best_score": -1.7760484608673865,
+  "best_params": {
+    "break_even_rr": 0.3,
+    "profit_target_rr": 2.75,
+    "trailing_stop_distance": 1.6,
+    "ema_tighten_zone": 0.45,
+    "tightened_trail_distance": 0.4,
+    "ema_confirmation_bars": 1,
+    "atr_stop_mult": 2.25,
+    "min_stop_atr": 0.15000000000000002,
+    "swing_lookback": 3,
+    "min_acceptable_rr": 1.5,
+    "ema_period": 7,
+    "vwap_stop_distance": 0.30000000000000004,
+    "max_target_atr": 2.75,
+    "breakout_threshold_mult": 0.15,
+    "min_body_strength": 0.3,
+    "trading_end_minutes": 645
+  },
+  "fixed_params": {
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "use_ssl_momentum": true,
+    "use_wae_acceleration": true,
+    "use_qqe_momentum": true,
+    "trading_start_minutes": 570,
+    "enable_confluence": false,
+    "min_confluence": 0,
+    "skip_low_vol_c_grades": false
+  },
+  "train_results": {
+    "total_trades": 31,
+    "win_rate": 52.38095238095239,
+    "total_r": 7.067682140614616,
+    "avg_r_per_trade": 0.22798974647143924,
+    "profit_factor": 1.427822695160298,
+    "max_drawdown_r": 4.0
+  },
+  "test_results": {
+    "total_trades": 89,
+    "win_rate": 50.81967213114754,
+    "total_r": 4.512330551078592,
+    "avg_r_per_trade": 0.050700343270545976,
+    "profit_factor": 0.9387223265907659,
+    "max_drawdown_r": 6.993505478170803
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "symbol": "AMZN",
+  "phase": 3,
+  "phase_name": "Confluence Gating",
+  "optimization_date": "2026-02-08T19:06:44.579681",
+  "optimizer_version": "v3_phased",
+  "objective": "robust_pf",
+  "train_period": {
+    "start": "2025-02-01",
+    "end": "2025-09-30"
+  },
+  "test_period": {
+    "start": "2025-10-01",
+    "end": "2026-01-27"
+  },
+  "n_trials": 75,
+  "best_score": -Infinity,
+  "best_params": {
+    "min_confluence": 2
+  },
+  "fixed_params": {
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "use_ssl_momentum": true,
+    "use_wae_acceleration": true,
+    "use_qqe_momentum": true,
+    "trading_start_minutes": 570,
+    "enable_confluence": true,
+    "break_even_rr": 0.4,
+    "profit_target_rr": 2.0,
+    "trailing_stop_distance": 1.1,
+    "ema_tighten_zone": 0.5,
+    "tightened_trail_distance": 0.2,
+    "ema_confirmation_bars": 1,
+    "atr_stop_mult": 1.75,
+    "min_stop_atr": 0.1,
+    "swing_lookback": 3,
+    "min_acceptable_rr": 1.5,
+    "ema_period": 8,
+    "vwap_stop_distance": 0.5,
+    "max_target_atr": 3.5,
+    "breakout_threshold_mult": 0.125,
+    "min_body_strength": 0.7,
+    "trading_end_minutes": 660,
+    "low_vol_threshold": 0.7,
+    "high_vol_threshold": 1.5,
+    "extreme_vol_threshold": 2.4000000000000004,
+    "skip_low_vol_c_grades": true,
+    "low_vol_min_rr": 2.5
+  },
+  "train_results": {
+    "total_trades": 29,
+    "win_rate": 52.63157894736842,
+    "total_r": 1.437656512496241,
+    "avg_r_per_trade": 0.04957436249987038,
+    "profit_factor": 1.3036078562234086,
+    "max_drawdown_r": 5.0
+  },
+  "test_results": {
+    "total_trades": 82,
+    "win_rate": 51.66666666666667,
+    "total_r": 13.411189752568704,
+    "avg_r_per_trade": 0.1635510945435208,
+    "profit_factor": 1.1585442971837159,
+    "max_drawdown_r": 5.9695921083908505
+  }
+}

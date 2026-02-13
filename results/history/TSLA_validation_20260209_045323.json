@@ -1,0 +1,63 @@
+{
+  "symbol": "TSLA",
+  "validation_date": "2026-02-09T04:53:23.127698",
+  "all_params": {
+    "use_break_even": true,
+    "use_trailing_stop": true,
+    "use_ssl_momentum": true,
+    "use_wae_acceleration": true,
+    "use_qqe_momentum": true,
+    "trading_start_minutes": 570,
+    "break_even_rr": 0.8,
+    "profit_target_rr": 3.0,
+    "trailing_stop_distance": 1.1,
+    "ema_tighten_zone": 0.4,
+    "tightened_trail_distance": 0.45,
+    "ema_confirmation_bars": 3,
+    "atr_stop_mult": 3.0,
+    "min_stop_atr": 0.25,
+    "swing_lookback": 7,
+    "min_acceptable_rr": 1.25,
+    "ema_period": 11,
+    "vwap_stop_distance": 0.25,
+    "max_target_atr": 2.5,
+    "breakout_threshold_mult": 0.15,
+    "min_body_strength": 0.3,
+    "trading_end_minutes": 645,
+    "low_vol_threshold": 0.6,
+    "high_vol_threshold": 1.4000000000000001,
+    "extreme_vol_threshold": 2.4000000000000004,
+    "skip_low_vol_c_grades": true,
+    "low_vol_min_rr": 1.75,
+    "min_confluence": 1,
+    "use_adaptive_be": false,
+    "use_ema_exit": true,
+    "use_aggressive_trailing": true,
+    "enable_confluence": true
+  },
+  "train_period": {
+    "start": "2025-02-01",
+    "end": "2025-09-30"
+  },
+  "test_period": {
+    "start": "2025-10-01",
+    "end": "2026-01-27"
+  },
+  "train_results": {
+    "total_trades": 31,
+    "win_rate": 52.0,
+    "total_r": 12.974029696559679,
+    "avg_r_per_trade": 0.4185170869857961,
+    "profit_factor": 1.5438365382201809,
+    "max_drawdown_r": 3.0
+  },
+  "test_results": {
+    "total_trades": 80,
+    "win_rate": 46.03174603174603,
+    "total_r": 32.40011124735442,
+    "avg_r_per_trade": 0.4050013905919302,
+    "profit_factor": 1.5031713163416591,
+    "max_drawdown_r": 9.597831061638509
+  },
+  "archive_id": "20260209_045323"
+}

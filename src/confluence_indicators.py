@@ -98,6 +98,9 @@ class ConfluenceCalculator:
         self.ssl_length = self.params.get('ssl_length', 5)
         self.ssl_type = self.params.get('ssl_type', 'JMA')
         self.use_ssl_momentum = self.params.get('use_ssl_momentum', True)
+        self.ssl_smoothing_enabled = self.params.get('ssl_smoothing_enabled', True)
+        self.ssl_smoothing_method = self.params.get('ssl_smoothing_method', 'Super Smoother')
+        self.ssl_smoothing_factor = self.params.get('ssl_smoothing_factor', 2.0)
         
         # WAE parameters
         self.wae_fast_ema = self.params.get('wae_fast_ema', 20)
@@ -168,6 +171,41 @@ class ConfluenceCalculator:
         
         return hma
     
+    @staticmethod
+    def _super_smoother(series: pd.Series, length: int) -> pd.Series:
+        """
+        Ehlers Super Smoother filter - matches Pine's superSmoother().
+        
+        Pine:
+            cutoff = 1.414 * 3.14159 / length
+            a1 = math.exp(-cutoff)
+            b1 = 2 * a1 * math.cos(1.414 * 3.14159 / length)
+            c2 = b1
+            c3 = -a1 * a1
+            c1 = 1 - c2 - c3
+            ss := c1 * (src + nz(src[1])) / 2 + c2 * nz(ss[1]) + c3 * nz(ss[2])
+        """
+        import math
+        cutoff = 1.414 * math.pi / max(length, 1)
+        a1 = math.exp(-cutoff)
+        b1 = 2 * a1 * math.cos(1.414 * math.pi / max(length, 1))
+        c2 = b1
+        c3 = -a1 * a1
+        c1 = 1 - c2 - c3
+        
+        ss = np.full(len(series), np.nan)
+        vals = series.values
+        
+        for i in range(len(vals)):
+            src_curr = vals[i] if not np.isnan(vals[i]) else 0.0
+            src_prev = vals[i-1] if i >= 1 and not np.isnan(vals[i-1]) else 0.0
+            ss_prev1 = ss[i-1] if i >= 1 and not np.isnan(ss[i-1]) else 0.0
+            ss_prev2 = ss[i-2] if i >= 2 and not np.isnan(ss[i-2]) else 0.0
+            
+            ss[i] = c1 * (src_curr + src_prev) / 2 + c2 * ss_prev1 + c3 * ss_prev2
+        
+        return pd.Series(ss, index=series.index)
+    
     def _jma(self, series: pd.Series, length: int) -> pd.Series:
         """
         Jurik Moving Average approximation
@@ -227,6 +265,29 @@ class ConfluenceCalculator:
         rsi = 100 - (100 / (1 + rs))
         return rsi
     
+    def _apply_smoother(self, series: pd.Series, enabled: bool, method: str, factor: float) -> pd.Series:
+        """
+        Apply smoothing filter matching Pine's applySmoother().
+        
+        Pine:
+            smoothingLength = math.round(factor * 2)
+            switch method
+                "Super Smoother" => superSmoother(src, smoothingLength)
+                "EMA Post-Smooth" => ta.ema(src, smoothingLength)
+                ...
+        """
+        if not enabled:
+            return series
+        smoothing_length = int(round(factor * 2))
+        if method == 'Super Smoother':
+            return self._super_smoother(series, smoothing_length)
+        elif method == 'EMA Post-Smooth':
+            return self._ema(series, smoothing_length)
+        elif method == 'JMA':
+            return self._jma(series, smoothing_length)
+        else:
+            return series
+    
     # =========================================================================
     # SSL HYBRID CALCULATION
     # =========================================================================
@@ -250,12 +311,28 @@ class ConfluenceCalculator:
         high = df['high']
         low = df['low']
         
-        # SSL Baseline (always HMA in Pine)
-        df['ssl_baseline'] = self._hma(close, self.ssl_baseline_length)
+        # SSL Baseline (always HMA in Pine) + smoothing
+        baseline_raw = self._hma(close, self.ssl_baseline_length)
+        df['ssl_baseline'] = self._apply_smoother(
+            baseline_raw, self.ssl_smoothing_enabled, 
+            self.ssl_smoothing_method, self.ssl_smoothing_factor
+        )
         
-        # SSL Up/Down lines
-        df['ssl_up'] = self._ma(high, self.ssl_length, self.ssl_type)
-        df['ssl_down'] = self._ma(low, self.ssl_length, self.ssl_type)
+        # SSL Up/Down lines + conditional smoothing
+        # Pine: sslUp smoothed ONLY if method != "Super Smoother" (EMA Post-Smooth at factor*0.5)
+        ssl_up_raw = self._ma(high, self.ssl_length, self.ssl_type)
+        ssl_down_raw = self._ma(low, self.ssl_length, self.ssl_type)
+        
+        bands_smoothing_enabled = (self.ssl_smoothing_enabled and 
+                                    self.ssl_smoothing_method != 'Super Smoother')
+        df['ssl_up'] = self._apply_smoother(
+            ssl_up_raw, bands_smoothing_enabled,
+            'EMA Post-Smooth', self.ssl_smoothing_factor * 0.5
+        )
+        df['ssl_down'] = self._apply_smoother(
+            ssl_down_raw, bands_smoothing_enabled,
+            'EMA Post-Smooth', self.ssl_smoothing_factor * 0.5
+        )
         
         # Direction and confirmations
         df['ssl_bull_confirm'] = close > df['ssl_baseline']
@@ -317,21 +394,14 @@ class ConfluenceCalculator:
         # T1 (trend strength with sensitivity)
         t1 = (macd - macd.shift(1)) * self.wae_sensitivity
         
-        # Bollinger Bands for explosion line - MUST USE RTH-ONLY (Pine parity)
-        # Pine computes WAE explosion on RTH-only closes via request.security
-        is_rth = df.index.map(lambda x: 9*60+30 <= x.hour*60+x.minute < 16*60)
-        rth_close = close.where(is_rth)
-        
-        # Compute BB on RTH-only, then forward fill to all bars
-        rth_basis = rth_close.rolling(window=self.wae_bb_length, min_periods=self.wae_bb_length).mean()
-        rth_stdev = rth_close.rolling(window=self.wae_bb_length, min_periods=self.wae_bb_length).std(ddof=0)
-        rth_dev = self.wae_bb_mult * rth_stdev
-        rth_bb_upper = rth_basis + rth_dev
-        rth_bb_lower = rth_basis - rth_dev
-        rth_explosion = rth_bb_upper - rth_bb_lower
-        
-        # Forward fill to cover premarket bars of next day
-        df['wae_explosion_line'] = rth_explosion.ffill()
+        # Bollinger Bands for explosion line
+        # Pine uses ta.sma(close, ...) on ALL bars — no RTH filter
+        bb_basis = self._sma(close, self.wae_bb_length)
+        bb_stdev = close.rolling(window=self.wae_bb_length, min_periods=self.wae_bb_length).std(ddof=0)
+        bb_dev = self.wae_bb_mult * bb_stdev
+        bb_upper = bb_basis + bb_dev
+        bb_lower = bb_basis - bb_dev
+        df['wae_explosion_line'] = bb_upper - bb_lower
         
         # Trend Up/Down (uses full session)
         df['wae_trend_up'] = t1.where(t1 >= 0, 0.0)
