@@ -1,0 +1,819 @@
+// HHM Simple Strategy — Confluence-Driven Entry
+// Stripped-down version of HHM.pine for backtesting parity with hmm_backtester_v2.py
+// REMOVED: IB filter, adaptive BE, adaptive R:R, SSL breach gate,
+//          composite grade, pre-signal feasibility, 9/20 EMA alt exit
+//@version=5
+strategy("HHM Simple", overlay=true, max_bars_back=500,
+         process_orders_on_close=false,
+         default_qty_type=strategy.fixed, default_qty_value=1,
+         initial_capital=100000, commission_value=0)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// --- Confluence ---
+var grpConf = "Confluence"
+minConfluenceScore = input.int(3, "Minimum Confluence Score", minval=1, maxval=5, group=grpConf)
+enableVolume       = input.bool(true, "Include Volume in Confluence", group=grpConf)
+minBarsBetweenEntries = input.int(1, "Min Bars Between Entries", minval=1, maxval=10, group=grpConf)
+
+// --- SSL Hybrid ---
+var grpSSL = "SSL Hybrid"
+sslBaseline       = input.string("HMA", "Baseline Type", options=["SMA","EMA","HMA","WMA","DEMA","TEMA"], group=grpSSL)
+sslBaselineLength = input.int(25, "Baseline Length", minval=10, maxval=200, group=grpSSL)
+sslSmoothingEnabled = input.bool(true, "Enable Smoothing", group=grpSSL)
+sslSmoothingMethod  = input.string("Super Smoother", "Smoothing Method", options=["Super Smoother","Jurik Filter","EMA Post-Smooth","Gaussian"], group=grpSSL)
+sslSmoothingFactor  = input.float(2.0, "Smoothing Factor", minval=1.0, maxval=5.0, step=0.5, group=grpSSL)
+useSSLMomentumFilter = input.bool(true, "Require SSL Gap Widening", group=grpSSL)
+sslType   = input.string("JMA", "SSL2 Type", options=["SMA","EMA","HMA","JMA"], group=grpSSL)
+sslLength = input.int(5, "SSL2 Length", minval=1, maxval=50, group=grpSSL)
+exitType   = input.string("HMA", "Exit Type", options=["SMA","EMA","HMA","WMA"], group=grpSSL)
+exitLength = input.int(10, "Exit Length", minval=5, maxval=50, group=grpSSL)
+
+// --- WAE ---
+var grpWAE = "Waddah Attar"
+waeSensitivity = input.int(275, "Sensitivity", minval=100, maxval=500, group=grpWAE)
+waeFastEMA     = input.int(15, "Fast EMA", minval=5, maxval=50, group=grpWAE)
+waeSlowEMA     = input.int(30, "Slow EMA", minval=20, maxval=100, group=grpWAE)
+waeBBLength    = input.int(20, "BB Length", minval=10, maxval=50, group=grpWAE)
+waeBBMult      = input.float(2.0, "BB Multiplier", minval=1.0, maxval=3.0, step=0.5, group=grpWAE)
+useWAEAccel    = input.bool(true, "Require WAE Acceleration", group=grpWAE)
+
+// --- QQE ---
+var grpQQE = "QQE Mod"
+qqeRSI1Len   = input.int(9, "Primary RSI Length", minval=2, maxval=30, group=grpQQE)
+qqeRSI1Smooth = input.int(5, "Primary RSI Smoothing", minval=1, maxval=30, group=grpQQE)
+qqeFactor1   = input.float(3.0, "Primary QQE Factor", minval=0.5, maxval=10.0, step=0.1, group=grpQQE)
+qqeRSI2Len   = input.int(4, "Secondary RSI Length", minval=2, maxval=30, group=grpQQE)
+qqeRSI2Smooth = input.int(4, "Secondary RSI Smoothing", minval=1, maxval=30, group=grpQQE)
+qqeFactor2   = input.float(1.61, "Secondary QQE Factor", minval=0.5, maxval=10.0, step=0.01, group=grpQQE)
+qqeBBLen     = input.int(25, "QQE BB Length", minval=20, maxval=100, group=grpQQE)
+qqeBBMult    = input.float(0.35, "QQE BB Multiplier", minval=0.1, maxval=1.0, step=0.05, group=grpQQE)
+qqeThreshold = input.float(3.0, "Secondary Threshold", minval=0.5, maxval=10.0, step=0.1, group=grpQQE)
+qqeConsecBars = input.int(3, "Consecutive Increasing Bars", minval=1, maxval=10, group=grpQQE)
+useQQEMomentum = input.bool(true, "Require QQE Momentum Direction", group=grpQQE)
+
+// --- Volume ---
+var grpVol = "Volume"
+volLookback = input.int(20, "Volume Z Lookback", minval=10, maxval=50, group=grpVol)
+
+// --- Quality Filters ---
+var grpQuality = "Quality Filters"
+useHTFTrendFilter    = input.bool(true, "Use HTF Trend Filter", group=grpQuality)
+htfTrendLength       = input.int(5, "HTF Trend EMA Length", minval=3, maxval=20, group=grpQuality)
+useMarketRegimeFilter = input.bool(true, "Use Market Regime Filter", group=grpQuality)
+marketETF            = input.string("SPY", "Market ETF", options=["SPY","QQQ"], group=grpQuality)
+marketTrendLength    = input.int(10, "Market Trend EMA Length", minval=5, maxval=30, group=grpQuality)
+useVolatilityFilter  = input.bool(true, "Use Volatility Filter", group=grpQuality)
+avoidLunchHour       = input.bool(true, "Skip 11:30-13:30 ET", group=grpQuality)
+
+// --- Risk / Stops ---
+var grpRisk = "Risk Management"
+fixedRisk        = input.float(200, "Fixed Risk ($)", minval=50, maxval=1000, step=50, group=grpRisk)
+riskRewardRatio  = input.float(2.0, "Risk:Reward Ratio", minval=1.0, maxval=5.0, step=0.5, group=grpRisk)
+atrPeriod        = input.int(14, "ATR Period", minval=5, maxval=30, group=grpRisk)
+atrStopMult      = input.float(2.0, "ATR Stop Multiplier", minval=1.0, maxval=4.0, step=0.25, group=grpRisk)
+swingLookback    = input.int(5, "Swing Lookback Bars", minval=3, maxval=30, group=grpRisk)
+swingBuffer      = input.float(0.02, "Swing Buffer (ATR mult)", minval=0.0, maxval=1.0, step=0.05, group=grpRisk)
+vwapStopDistance = input.float(0.3, "VWAP Stop Distance (ATR mult)", minval=0.1, maxval=2.0, step=0.05, group=grpRisk)
+maxTargetATR     = input.float(3.0, "Max Target ATR", minval=1.5, maxval=5.0, step=0.25, group=grpRisk)
+minAcceptableRR  = input.float(1.5, "Minimum Acceptable R:R", minval=1.0, maxval=3.0, step=0.1, group=grpRisk)
+
+// --- Exit Strategy ---
+var grpExits = "Exit Strategy"
+useBreakEven       = input.bool(true, "Use Break Even", group=grpExits)
+breakEvenRR        = input.float(0.5, "Break Even at R:R", minval=0.1, maxval=2.0, step=0.1, group=grpExits)
+useEmaExit         = input.bool(true, "Use EMA Exit after BE", group=grpExits)
+emaPeriod          = input.int(9, "EMA Period", minval=5, maxval=50, group=grpExits)
+emaConfirmationBars = input.int(1, "EMA Confirmation Bars", minval=0, maxval=5, group=grpExits)
+emaBodyPercentage  = input.float(60.0, "Body % Beyond EMA", minval=10.0, maxval=100.0, step=5.0, group=grpExits)
+useTrailingStop    = input.bool(true, "Use Trailing Stop", group=grpExits)
+profitTargetRR     = input.float(2.0, "Trailing Activation R:R", minval=0.5, maxval=10.0, step=0.1, group=grpExits)
+trailingStopDist   = input.float(1.2, "Trailing Stop Distance (ATR)", minval=0.1, maxval=5.0, step=0.05, group=grpExits)
+aggressiveTrailing = input.bool(true, "Aggressive Trailing Near EMA", group=grpExits)
+emaTightenZone     = input.float(0.3, "EMA Tighten Zone (ATR)", minval=0.1, maxval=2.0, step=0.05, group=grpExits)
+tightenedTrailDist = input.float(0.3, "Tightened Trail Distance (ATR)", minval=0.1, maxval=2.0, step=0.05, group=grpExits)
+
+// --- Symbol Presets ---
+var grpPresets = "Symbol Presets"
+useSymbolPresets = input.bool(true, "Use Symbol Presets", group=grpPresets)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRESET RESOLUTION (switch-based for length params, ternary for others)
+// Symbols: AAPL, NVDA, AMD, GOOGL, AMZN, META, MSFT, NFLX, ORCL, PLTR, TSLA
+// ═══════════════════════════════════════════════════════════════════════════
+
+_sym = syminfo.ticker
+
+sslBaselineLengthEff = switch
+    not useSymbolPresets => sslBaselineLength
+    _sym == "AAPL" => 20
+    _sym == "NVDA" => 20
+    _sym == "AMD" => 60
+    _sym == "GOOGL" => 60
+    _sym == "AMZN" => 50
+    _sym == "META" => 60
+    _sym == "MSFT" => 60
+    _sym == "NFLX" => 60
+    _sym == "ORCL" => 20
+    _sym == "PLTR" => 20
+    _sym == "TSLA" => 40
+    => sslBaselineLength
+
+_isPreset = useSymbolPresets and (_sym == "AAPL" or _sym == "NVDA" or _sym == "AMD" or _sym == "GOOGL" or _sym == "AMZN" or _sym == "META" or _sym == "MSFT" or _sym == "NFLX" or _sym == "ORCL" or _sym == "PLTR" or _sym == "TSLA")
+sslLengthEff = _isPreset ? 10 : sslLength
+
+waeSensitivityEff = switch
+    not useSymbolPresets => waeSensitivity
+    _sym == "AAPL" => 200
+    _sym == "NVDA" => 325
+    _sym == "AMD" => 300
+    _sym == "GOOGL" => 200
+    _sym == "AMZN" => 225
+    _sym == "META" => 325
+    _sym == "MSFT" => 325
+    _sym == "NFLX" => 200
+    _sym == "ORCL" => 300
+    _sym == "PLTR" => 325
+    _sym == "TSLA" => 275
+    => waeSensitivity
+
+qqeRSI1LenEff = switch
+    not useSymbolPresets => qqeRSI1Len
+    _sym == "AAPL" => 10
+    _sym == "NVDA" => 9
+    _sym == "AMD" => 8
+    _sym == "GOOGL" => 9
+    _sym == "AMZN" => 10
+    _sym == "META" => 9
+    _sym == "MSFT" => 10
+    _sym == "NFLX" => 9
+    _sym == "ORCL" => 8
+    _sym == "PLTR" => 8
+    _sym == "TSLA" => 8
+    => qqeRSI1Len
+
+qqeThresholdEff = switch
+    not useSymbolPresets => qqeThreshold
+    _sym == "AAPL" => 3.0
+    _sym == "NVDA" => 3.0
+    _sym == "AMD" => 3.0
+    _sym == "GOOGL" => 3.0
+    _sym == "AMZN" => 3.0
+    _sym == "META" => 3.0
+    _sym == "MSFT" => 3.0
+    _sym == "NFLX" => 3.0
+    _sym == "ORCL" => 3.0
+    _sym == "PLTR" => 3.0
+    _sym == "TSLA" => 3.0
+    => qqeThreshold
+
+htfTrendLengthEff = switch
+    not useSymbolPresets => htfTrendLength
+    _sym == "AAPL" => 5
+    _sym == "NVDA" => 5
+    _sym == "AMD" => 5
+    _sym == "GOOGL" => 5
+    _sym == "AMZN" => 5
+    _sym == "META" => 5
+    _sym == "MSFT" => 5
+    _sym == "NFLX" => 5
+    _sym == "ORCL" => 5
+    _sym == "PLTR" => 5
+    _sym == "TSLA" => 5
+    => htfTrendLength
+
+marketETFEff = _isPreset ? "QQQ" : marketETF
+
+minAcceptableRREff = switch
+    not useSymbolPresets => minAcceptableRR
+    _sym == "AAPL" => 1.5
+    _sym == "NVDA" => 1.5
+    _sym == "AMD" => 1.5
+    _sym == "GOOGL" => 1.5
+    _sym == "AMZN" => 1.5
+    _sym == "META" => 1.5
+    _sym == "MSFT" => 1.5
+    _sym == "NFLX" => 1.5
+    _sym == "ORCL" => 1.5
+    _sym == "PLTR" => 1.5
+    _sym == "TSLA" => 1.5
+    => minAcceptableRR
+
+breakEvenRREff = switch
+    not useSymbolPresets => breakEvenRR
+    _sym == "AAPL" => 0.5
+    _sym == "NVDA" => 0.5
+    _sym == "AMD" => 0.5
+    _sym == "GOOGL" => 0.5
+    _sym == "AMZN" => 0.5
+    _sym == "META" => 0.5
+    _sym == "MSFT" => 0.5
+    _sym == "NFLX" => 0.5
+    _sym == "ORCL" => 0.5
+    _sym == "PLTR" => 0.5
+    _sym == "TSLA" => 0.5
+    => breakEvenRR
+
+profitTargetRREff = switch
+    not useSymbolPresets => profitTargetRR
+    _sym == "AAPL" => 2.0
+    _sym == "NVDA" => 2.0
+    _sym == "AMD" => 2.0
+    _sym == "GOOGL" => 2.0
+    _sym == "AMZN" => 2.0
+    _sym == "META" => 2.0
+    _sym == "MSFT" => 2.0
+    _sym == "NFLX" => 2.0
+    _sym == "ORCL" => 2.0
+    _sym == "PLTR" => 2.0
+    _sym == "TSLA" => 2.0
+    => profitTargetRR
+
+trailingStopDistEff = switch
+    not useSymbolPresets => trailingStopDist
+    _sym == "AAPL" => 1.2
+    _sym == "NVDA" => 1.2
+    _sym == "AMD" => 1.2
+    _sym == "GOOGL" => 1.2
+    _sym == "AMZN" => 1.2
+    _sym == "META" => 1.2
+    _sym == "MSFT" => 1.2
+    _sym == "NFLX" => 1.2
+    _sym == "ORCL" => 1.2
+    _sym == "PLTR" => 1.2
+    _sym == "TSLA" => 1.2
+    => trailingStopDist
+
+emaConfirmationBarsEff = switch
+    not useSymbolPresets => emaConfirmationBars
+    _sym == "AAPL" => 1
+    _sym == "NVDA" => 1
+    _sym == "AMD" => 1
+    _sym == "GOOGL" => 1
+    _sym == "AMZN" => 1
+    _sym == "META" => 1
+    _sym == "MSFT" => 1
+    _sym == "NFLX" => 1
+    _sym == "ORCL" => 1
+    _sym == "PLTR" => 1
+    _sym == "TSLA" => 1
+    => emaConfirmationBars
+
+emaBodyPercentageEff = switch
+    not useSymbolPresets => emaBodyPercentage
+    _sym == "AAPL" => 60.0
+    _sym == "NVDA" => 60.0
+    _sym == "AMD" => 60.0
+    _sym == "GOOGL" => 60.0
+    _sym == "AMZN" => 60.0
+    _sym == "META" => 60.0
+    _sym == "MSFT" => 60.0
+    _sym == "NFLX" => 60.0
+    _sym == "ORCL" => 60.0
+    _sym == "PLTR" => 60.0
+    _sym == "TSLA" => 60.0
+    => emaBodyPercentage
+
+minBarsBetweenEntriesEff = switch
+    not useSymbolPresets => minBarsBetweenEntries
+    _sym == "AAPL" => 1
+    _sym == "NVDA" => 1
+    _sym == "AMD" => 1
+    _sym == "GOOGL" => 1
+    _sym == "AMZN" => 1
+    _sym == "META" => 1
+    _sym == "MSFT" => 1
+    _sym == "NFLX" => 1
+    _sym == "ORCL" => 1
+    _sym == "PLTR" => 1
+    _sym == "TSLA" => 1
+    => minBarsBetweenEntries
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+ma(src, len, maType) =>
+    switch maType
+        "SMA"  => ta.sma(src, len)
+        "EMA"  => ta.ema(src, len)
+        "HMA"  => ta.hma(src, len)
+        "WMA"  => ta.wma(src, len)
+        "DEMA" =>
+            e = ta.ema(src, len)
+            2 * e - ta.ema(e, len)
+        "TEMA" =>
+            e = ta.ema(src, len)
+            e2 = ta.ema(e, len)
+            e3 = ta.ema(e2, len)
+            3 * e - 3 * e2 + e3
+        "JMA"  => ta.ema(src, len)  // JMA approximation
+        => ta.sma(src, len)
+
+// Super Smoother (Ehlers)
+superSmoother(src, len) =>
+    a = math.exp(-1.414 * math.pi / len)
+    b = 2 * a * math.cos(1.414 * math.pi / len)
+    c2 = b
+    c3 = -a * a
+    c1 = 1 - c2 - c3
+    var float ss = na
+    ss := c1 * (src + nz(src[1])) * 0.5 + c2 * nz(ss[1]) + c3 * nz(ss[2])
+    ss
+
+applySmoother(src, enabled, method, factor) =>
+    if not enabled
+        src
+    else
+        switch method
+            "Super Smoother" => superSmoother(src, math.round(factor * 2))
+            "EMA Post-Smooth" => ta.ema(src, math.round(factor))
+            => src
+
+findSwingLow(lookback) =>
+    float val = low
+    for j = 1 to lookback
+        val := math.min(val, low[j])
+    val
+
+findSwingHigh(lookback) =>
+    float val = high
+    for j = 1 to lookback
+        val := math.max(val, high[j])
+    val
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CORE INDICATORS
+// ═══════════════════════════════════════════════════════════════════════════
+
+atr = ta.atr(atrPeriod)
+
+// === VWAP ===
+vwapValue = ta.vwap(hlc3)
+
+// === EMA for exits ===
+ema9 = ta.ema(close, emaPeriod)
+
+// === HTF Trend (5-min) ===
+htfEma = request.security(syminfo.tickerid, "5", ta.ema(close, htfTrendLengthEff))
+htfTrendBullish = not useHTFTrendFilter or close > htfEma
+htfTrendBearish = not useHTFTrendFilter or close < htfEma
+
+// === Market Regime ===
+marketClose = request.security(marketETFEff, timeframe.period, close)
+marketEma   = request.security(marketETFEff, timeframe.period, ta.ema(close, marketTrendLength))
+marketBullish = not useMarketRegimeFilter or marketClose > marketEma
+marketBearish = not useMarketRegimeFilter or marketClose < marketEma
+
+// === Volatility Condition ===
+atrPct    = atr / close
+atrPctAvg = ta.sma(atrPct, 20)
+volatilityOK = not useVolatilityFilter or atrPct >= atrPctAvg * 0.8
+
+// === Market Hours ===
+currentHour   = hour(time, "America/New_York")
+currentMinute = minute(time, "America/New_York")
+barMinutes    = currentHour * 60 + currentMinute
+inMarketHours = barMinutes >= 570 and barMinutes < 960   // 9:30-16:00
+inEntryWindow = barMinutes >= 630 and barMinutes < 955   // 10:30-15:55
+inLunchHour   = barMinutes >= 690 and barMinutes < 810   // 11:30-13:30
+isMarketClose = currentHour == 15 and currentMinute >= 55
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SSL HYBRID
+// ═══════════════════════════════════════════════════════════════════════════
+
+baselineRaw = ma(close, sslBaselineLengthEff, sslBaseline)
+baseline = applySmoother(baselineRaw, sslSmoothingEnabled, sslSmoothingMethod, sslSmoothingFactor)
+
+sslUpRaw   = ma(high, sslLengthEff, sslType)
+sslDownRaw = ma(low, sslLengthEff, sslType)
+sslUp   = applySmoother(sslUpRaw, sslSmoothingEnabled and sslSmoothingMethod != "Super Smoother", "EMA Post-Smooth", sslSmoothingFactor * 0.5)
+sslDown = applySmoother(sslDownRaw, sslSmoothingEnabled and sslSmoothingMethod != "Super Smoother", "EMA Post-Smooth", sslSmoothingFactor * 0.5)
+
+exitHighRaw = ma(high, exitLength, exitType)
+exitLowRaw  = ma(low, exitLength, exitType)
+exitHigh = applySmoother(exitHighRaw, sslSmoothingEnabled, "EMA Post-Smooth", sslSmoothingFactor * 0.3)
+exitLow  = applySmoother(exitLowRaw, sslSmoothingEnabled, "EMA Post-Smooth", sslSmoothingFactor * 0.3)
+
+var int exitDirection = 0
+exitDirection := close > exitHigh ? 1 : close < exitLow ? -1 : exitDirection
+sslExit = exitDirection < 0 ? exitHigh : exitLow
+
+sslBullishSimple = close > baseline
+sslBearishSimple = close < baseline
+
+sslGapBull  = nz(close - baseline)
+sslGapBear  = nz(baseline - close)
+sslAccelBull = nz(sslGapBull) > nz(sslGapBull[1])
+sslAccelBear = nz(sslGapBear) > nz(sslGapBear[1])
+
+float sslScoreBull = 0.0
+float sslScoreBear = 0.0
+if useSSLMomentumFilter
+    sslScoreBull := sslBullishSimple and sslAccelBull ? 1.0 : 0.0
+    sslScoreBear := sslBearishSimple and sslAccelBear ? 1.0 : 0.0
+else
+    sslScoreBull := sslBullishSimple ? 1.0 : 0.0
+    sslScoreBear := sslBearishSimple ? 1.0 : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WADDAH ATTAR EXPLOSION
+// ═══════════════════════════════════════════════════════════════════════════
+
+fastMA = ta.ema(close, waeFastEMA)
+slowMA = ta.ema(close, waeSlowEMA)
+macd_val  = fastMA - slowMA
+macdPrev  = fastMA[1] - slowMA[1]
+t1 = (macd_val - macdPrev) * waeSensitivityEff
+
+waeBasis = ta.sma(close, waeBBLength)
+waeDev   = waeBBMult * ta.stdev(close, waeBBLength)
+explosionLine = (waeBasis + waeDev) - (waeBasis - waeDev)
+
+trendUp   = t1 >= 0 ? t1 : 0
+trendDown = t1 <  0 ? math.abs(t1) : 0
+
+waeBullish = trendUp > explosionLine
+waeBearish = trendDown > explosionLine
+waeAccelBull = trendUp > nz(trendUp[1])
+waeAccelBear = trendDown > nz(trendDown[1])
+
+float waeScoreBull = 0.0
+float waeScoreBear = 0.0
+if useWAEAccel
+    waeScoreBull := waeBullish and waeAccelBull ? 1.0 : 0.0
+    waeScoreBear := waeBearish and waeAccelBear ? 1.0 : 0.0
+else
+    waeScoreBull := waeBullish ? 1.0 : 0.0
+    waeScoreBear := waeBearish ? 1.0 : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QQE MOD
+// ═══════════════════════════════════════════════════════════════════════════
+
+// --- Primary QQE (RSI1) ---
+rsi1Src = ta.rsi(close, qqeRSI1LenEff)
+rsiMA1  = ta.ema(rsi1Src, qqeRSI1Smooth)
+atrRsi1 = math.abs(rsiMA1[1] - rsiMA1)
+maAtrRsi1 = ta.ema(atrRsi1, qqeRSI1Smooth * 2 - 1)
+dar1 = ta.ema(maAtrRsi1, qqeRSI1Smooth * 2 - 1) * qqeFactor1
+
+var float longBand1 = 0.0
+var float shortBand1 = 0.0
+var int trend1 = 0
+
+longBand1  := rsiMA1 - dar1 > longBand1[1]  and rsiMA1[1] - dar1 > longBand1[1]  ? math.max(rsiMA1 - dar1, longBand1[1])  : rsiMA1 - dar1
+shortBand1 := rsiMA1 + dar1 < shortBand1[1] and rsiMA1[1] + dar1 < shortBand1[1] ? math.min(rsiMA1 + dar1, shortBand1[1]) : rsiMA1 + dar1
+trend1     := rsiMA1 > shortBand1[1] ? 1 : rsiMA1 < longBand1[1] ? -1 : trend1[1]
+
+FastAtrRsiTL1 = trend1 == 1 ? longBand1 : shortBand1
+
+// --- Secondary QQE (RSI2) ---
+rsi2Src = ta.rsi(close, qqeRSI2Len)
+rsiMA2  = ta.ema(rsi2Src, qqeRSI2Smooth)
+atrRsi2 = math.abs(rsiMA2[1] - rsiMA2)
+maAtrRsi2 = ta.ema(atrRsi2, qqeRSI2Smooth * 2 - 1)
+dar2 = ta.ema(maAtrRsi2, qqeRSI2Smooth * 2 - 1) * qqeFactor2
+
+var float longBand2 = 0.0
+var float shortBand2 = 0.0
+var int trend2 = 0
+
+longBand2  := rsiMA2 - dar2 > longBand2[1]  and rsiMA2[1] - dar2 > longBand2[1]  ? math.max(rsiMA2 - dar2, longBand2[1])  : rsiMA2 - dar2
+shortBand2 := rsiMA2 + dar2 < shortBand2[1] and rsiMA2[1] + dar2 < shortBand2[1] ? math.min(rsiMA2 + dar2, shortBand2[1]) : rsiMA2 + dar2
+trend2     := rsiMA2 > shortBand2[1] ? 1 : rsiMA2 < longBand2[1] ? -1 : trend2[1]
+
+FastAtrRsiTL2 = trend2 == 1 ? longBand2 : shortBand2
+
+// QQE histogram
+qqeHist = rsiMA1 - 50
+qqeZeroLine = 0.0
+
+// QQE BB on histogram
+qqeBasis = ta.sma(qqeHist, qqeBBLen)
+qqeDev   = qqeBBMult * ta.stdev(qqeHist, qqeBBLen)
+qqeUpper = qqeBasis + qqeDev
+qqeLower = qqeBasis - qqeDev
+
+// QQE signal conditions
+qqeGreenBar  = rsiMA1 - 50 > qqeThresholdEff
+qqeRedBar    = rsiMA1 - 50 < -qqeThresholdEff
+qqeBlueLine  = rsiMA2 - 50
+
+qqeAboveUpper = qqeHist > qqeUpper
+qqeBelowLower = qqeHist < qqeLower
+
+// Count consecutive increasing/decreasing bars
+var int qqeIncreasingCount = 0
+var int qqeDecreasingCount = 0
+qqeIncreasingCount := qqeHist > qqeHist[1] ? qqeIncreasingCount[1] + 1 : 0
+qqeDecreasingCount := qqeHist < qqeHist[1] ? qqeDecreasingCount[1] + 1 : 0
+
+qqeBullSignal = qqeGreenBar and qqeBlueLine > qqeThresholdEff and qqeAboveUpper and qqeIncreasingCount >= qqeConsecBars
+qqeBearSignal = qqeRedBar  and qqeBlueLine < -qqeThresholdEff and qqeBelowLower and qqeDecreasingCount >= qqeConsecBars
+
+qqeMomentumRising  = qqeHist > qqeHist[1] and qqeHist[1] > qqeHist[2]
+qqeMomentumFalling = qqeHist < qqeHist[1] and qqeHist[1] < qqeHist[2]
+
+float qqeScoreBull = 0.0
+float qqeScoreBear = 0.0
+if useQQEMomentum
+    qqeScoreBull := qqeBullSignal and qqeMomentumRising  ? 1.0 : 0.0
+    qqeScoreBear := qqeBearSignal and qqeMomentumFalling ? 1.0 : 0.0
+else
+    qqeScoreBull := qqeBullSignal ? 1.0 : 0.0
+    qqeScoreBear := qqeBearSignal ? 1.0 : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VOLUME Z-SCORE
+// ═══════════════════════════════════════════════════════════════════════════
+
+volMean = ta.sma(volume, volLookback)
+volStd  = ta.stdev(volume, volLookback)
+volZ    = volStd > 0 ? (volume - volMean) / volStd : 0.0
+volScore = volZ >= 1.0 ? 1.0 : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFLUENCE SCORING
+// ═══════════════════════════════════════════════════════════════════════════
+
+bullScore = sslScoreBull + waeScoreBull + qqeScoreBull + (enableVolume ? int(math.round(volScore)) : 0)
+bearScore = sslScoreBear + waeScoreBear + qqeScoreBear + (enableVolume ? int(math.round(volScore)) : 0)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STOP CALCULATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+evaluateBestStop(bool isLong, float entryPrice, float atrVal, float vwapVal) =>
+    float minStopDist = atrVal * 0.15
+
+    // ATR stop (always valid)
+    float atrStop = isLong ? entryPrice - (atrVal * atrStopMult) : entryPrice + (atrVal * atrStopMult)
+
+    // Swing stop
+    float swingVal = isLong ? findSwingLow(swingLookback) - (atrVal * swingBuffer) : findSwingHigh(swingLookback) + (atrVal * swingBuffer)
+    bool swingValid = isLong ? (swingVal < entryPrice - minStopDist) : (swingVal > entryPrice + minStopDist)
+    float swingStop = swingValid ? swingVal : atrStop
+
+    // VWAP stop
+    bool vwapSideOK  = isLong ? (vwapVal < entryPrice) : (vwapVal > entryPrice)
+    float vwapCalc   = isLong ? vwapVal - (atrVal * vwapStopDistance) : vwapVal + (atrVal * vwapStopDistance)
+    bool vwapDistOK  = isLong ? (vwapCalc < entryPrice - minStopDist) : (vwapCalc > entryPrice + minStopDist)
+    bool vwapValid   = vwapSideOK and vwapDistOK
+    float vwapStop   = vwapValid ? vwapCalc : atrStop
+
+    // Calculate achievable R:R for each valid stop
+    float rrTarget = riskRewardRatio
+
+    float atrRisk  = math.abs(entryPrice - atrStop)
+    float atrTargetATRs = atrRisk > 0 ? (atrRisk * rrTarget) / atrVal : 999
+    float atrBestRR = atrTargetATRs <= maxTargetATR ? rrTarget : (atrRisk > 0 ? (maxTargetATR * atrVal) / atrRisk : 0)
+
+    float swRisk = swingValid ? math.abs(entryPrice - swingStop) : na
+    float swTargetATRs = swingValid and swRisk > 0 ? (swRisk * rrTarget) / atrVal : 999
+    float swBestRR = swingValid ? (swTargetATRs <= maxTargetATR ? rrTarget : (swRisk > 0 ? (maxTargetATR * atrVal) / swRisk : 0)) : -1.0
+
+    float vwRisk = vwapValid ? math.abs(entryPrice - vwapStop) : na
+    float vwTargetATRs = vwapValid and vwRisk > 0 ? (vwRisk * rrTarget) / atrVal : 999
+    float vwBestRR = vwapValid ? (vwTargetATRs <= maxTargetATR ? rrTarget : (vwRisk > 0 ? (maxTargetATR * atrVal) / vwRisk : 0)) : -1.0
+
+    // Pick best R:R
+    float bestRR = math.max(atrBestRR, math.max(swBestRR, vwBestRR))
+
+    float selStop = atrStop
+    float selRR   = atrBestRR
+
+    if bestRR == swBestRR and swingValid and swBestRR >= minAcceptableRREff
+        selStop := swingStop
+        selRR   := swBestRR
+    else if bestRR == vwBestRR and vwapValid and vwBestRR >= minAcceptableRREff
+        selStop := vwapStop
+        selRR   := vwBestRR
+    else if atrBestRR >= minAcceptableRREff
+        selStop := atrStop
+        selRR   := atrBestRR
+
+    [selStop, selRR]
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POSITION STATE
+// ═══════════════════════════════════════════════════════════════════════════
+
+var int tradeState = 0    // 0=flat, 1=long, -1=short
+inLongPosition  = tradeState == 1
+inShortPosition = tradeState == -1
+
+var float entryPrice = na
+var float stopPrice = na
+var float initialStopPrice = na
+var float breakEvenPrice = na
+var int   entryBar = na
+var float positionSize = na
+var bool  breakEvenActivated = false
+var bool  trailingStopActivated = false
+var float trailingStopLevel = na
+var int   lastEntryBar = 0
+var int   barsUnderEma = 0
+var int   barsOverEma = 0
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SIGNAL QUALIFICATION (runs every bar — unconditional)
+// longSignal/shortSignal track pure confluence+HTF+market state so
+// rising-edge detection (newLong/ShortSignal) is not polluted by
+// entry-window, lunch, volatility, position, or cooldown gates.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Qualification: confluence + HTF trend + market regime only
+longQualifies  = htfTrendBullish and marketBullish and bullScore >= minConfluenceScore
+shortQualifies = htfTrendBearish and marketBearish and bearScore >= minConfluenceScore
+
+// Track qualification state for rising-edge detection
+var bool longSignal = false
+var bool shortSignal = false
+longSignal  := longQualifies
+shortSignal := shortQualifies
+
+newLongSignal  = longSignal  and not longSignal[1]
+newShortSignal = shortSignal and not shortSignal[1]
+
+// Entry gates (position, window, filters) — only control execution
+baseOK = inMarketHours and inEntryWindow and volatilityOK
+baseOK := avoidLunchHour ? baseOK and not inLunchHour : baseOK
+bool canEnter = not inLongPosition and not inShortPosition and (bar_index - lastEntryBar >= minBarsBetweenEntriesEff)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ENTRY EXECUTION (next bar via strategy)
+// Rising edge + all gates + feasibility check
+// ═══════════════════════════════════════════════════════════════════════════
+
+if newLongSignal and baseOK and canEnter and barstate.isconfirmed
+    [candStop, candRR] = evaluateBestStop(true, close, atr, vwapValue)
+    if candRR >= minAcceptableRREff
+        float riskPerShare = math.abs(close - candStop)
+        float beTarget = close + (riskPerShare * breakEvenRREff)
+
+        tradeState := 1
+        lastEntryBar := bar_index
+        entryPrice := close
+        stopPrice := candStop
+        initialStopPrice := candStop
+        breakEvenPrice := beTarget
+        entryBar := bar_index
+        positionSize := riskPerShare > 0 ? fixedRisk / riskPerShare : 0
+        breakEvenActivated := false
+        trailingStopActivated := false
+        trailingStopLevel := na
+        barsUnderEma := 0
+        barsOverEma := 0
+
+        strategy.entry("Long", strategy.long)
+
+if newShortSignal and baseOK and canEnter and barstate.isconfirmed and not inLongPosition
+    [candStop, candRR] = evaluateBestStop(false, close, atr, vwapValue)
+    if candRR >= minAcceptableRREff
+        float riskPerShare = math.abs(close - candStop)
+        float beTarget = close - (riskPerShare * breakEvenRREff)
+
+        tradeState := -1
+        lastEntryBar := bar_index
+        entryPrice := close
+        stopPrice := candStop
+        initialStopPrice := candStop
+        breakEvenPrice := beTarget
+        entryBar := bar_index
+        positionSize := riskPerShare > 0 ? fixedRisk / riskPerShare : 0
+        breakEvenActivated := false
+        trailingStopActivated := false
+        trailingStopLevel := na
+        barsUnderEma := 0
+        barsOverEma := 0
+
+        strategy.entry("Short", strategy.short)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXIT CASCADE: stop → BE → trailing → EMA → EOD
+// ═══════════════════════════════════════════════════════════════════════════
+
+// --- 1. STOP HIT ---
+if inLongPosition and low <= stopPrice and bar_index > entryBar
+    strategy.close("Long", comment=trailingStopActivated ? "TRAIL STOP" : (breakEvenActivated ? "BE STOP" : "STOP LOSS"))
+    tradeState := 0
+    trailingStopActivated := false
+    trailingStopLevel := na
+    initialStopPrice := na
+
+if inShortPosition and high >= stopPrice and bar_index > entryBar
+    strategy.close("Short", comment=trailingStopActivated ? "TRAIL STOP" : (breakEvenActivated ? "BE STOP" : "STOP LOSS"))
+    tradeState := 0
+    trailingStopActivated := false
+    trailingStopLevel := na
+    initialStopPrice := na
+
+// --- 2. BREAK-EVEN ACTIVATION (uses high/low) ---
+if inLongPosition and useBreakEven and not breakEvenActivated
+    if high >= breakEvenPrice
+        stopPrice := entryPrice
+        breakEvenActivated := true
+
+if inShortPosition and useBreakEven and not breakEvenActivated
+    if low <= breakEvenPrice
+        stopPrice := entryPrice
+        breakEvenActivated := true
+
+// --- 3. TRAILING STOP ---
+if inLongPosition and breakEvenActivated and useTrailingStop and not na(initialStopPrice)
+    float longRisk = math.abs(entryPrice - initialStopPrice)
+    float profitTarget = entryPrice + (longRisk * profitTargetRREff)
+
+    if not trailingStopActivated and close >= profitTarget
+        trailingStopActivated := true
+        trailingStopLevel := close - (atr * trailingStopDistEff)
+
+    if trailingStopActivated
+        float currentTrailDist = trailingStopDistEff
+        if aggressiveTrailing
+            float distToEma = math.abs(close - ema9)
+            if distToEma <= (atr * emaTightenZone)
+                currentTrailDist := tightenedTrailDist
+        float newTrailLevel = close - (atr * currentTrailDist)
+        if newTrailLevel > trailingStopLevel
+            trailingStopLevel := newTrailLevel
+        stopPrice := math.max(trailingStopLevel, entryPrice)
+
+if inShortPosition and breakEvenActivated and useTrailingStop and not na(initialStopPrice)
+    float shortRisk = math.abs(entryPrice - initialStopPrice)
+    float profitTarget = entryPrice - (shortRisk * profitTargetRREff)
+
+    if not trailingStopActivated and close <= profitTarget
+        trailingStopActivated := true
+        trailingStopLevel := close + (atr * trailingStopDistEff)
+
+    if trailingStopActivated
+        float currentTrailDist = trailingStopDistEff
+        if aggressiveTrailing
+            float distToEma = math.abs(close - ema9)
+            if distToEma <= (atr * emaTightenZone)
+                currentTrailDist := tightenedTrailDist
+        float newTrailLevel = close + (atr * currentTrailDist)
+        if newTrailLevel < trailingStopLevel
+            trailingStopLevel := newTrailLevel
+        stopPrice := math.min(trailingStopLevel, entryPrice)
+
+// --- 4. EMA EXIT (after BE, not trailing, with confirmation + body %) ---
+// Track bars beyond EMA (runs every bar while in position, before gated check)
+if inLongPosition and close < ema9
+    barsUnderEma := barsUnderEma + 1
+else
+    barsUnderEma := 0
+
+if inShortPosition and close > ema9
+    barsOverEma := barsOverEma + 1
+else
+    barsOverEma := 0
+
+// Body percentage check
+float bodySize = math.abs(close - open)
+float bodyBeyondEmaLong  = open > ema9 ? 0.0 : (bodySize > 0 ? math.min(bodySize, ema9 - close) / bodySize * 100 : 0.0)
+float bodyBeyondEmaShort = open < ema9 ? 0.0 : (bodySize > 0 ? math.min(bodySize, close - ema9) / bodySize * 100 : 0.0)
+
+emaExitLong  = inLongPosition  and breakEvenActivated and not trailingStopActivated and barsUnderEma >= emaConfirmationBarsEff and bodyBeyondEmaLong >= emaBodyPercentageEff
+emaExitShort = inShortPosition and breakEvenActivated and not trailingStopActivated and barsOverEma  >= emaConfirmationBarsEff and bodyBeyondEmaShort >= emaBodyPercentageEff
+
+if useEmaExit and emaExitLong and inLongPosition and not trailingStopActivated and (breakEvenActivated or close > entryPrice)
+    strategy.close("Long", comment="EMA EXIT")
+    tradeState := 0
+    trailingStopActivated := false
+    trailingStopLevel := na
+    initialStopPrice := na
+
+if useEmaExit and emaExitShort and inShortPosition and not trailingStopActivated and (breakEvenActivated or close < entryPrice)
+    strategy.close("Short", comment="EMA EXIT")
+    tradeState := 0
+    trailingStopActivated := false
+    trailingStopLevel := na
+    initialStopPrice := na
+
+// --- 5. EOD EXIT ---
+if isMarketClose and inLongPosition
+    strategy.close("Long", comment="EOD EXIT")
+    tradeState := 0
+    trailingStopActivated := false
+    trailingStopLevel := na
+    initialStopPrice := na
+
+if isMarketClose and inShortPosition
+    strategy.close("Short", comment="EOD EXIT")
+    tradeState := 0
+    trailingStopActivated := false
+    trailingStopLevel := na
+    initialStopPrice := na
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLOTS
+// ═══════════════════════════════════════════════════════════════════════════
+plot(ema9, "EMA9", color=color.new(color.yellow, 50), linewidth=1)
+plot(baseline, "SSL Baseline", color=color.new(color.blue, 60), linewidth=1)
+plot(sslExit, "SSL Exit", color=color.new(color.purple, 70), linewidth=1)
