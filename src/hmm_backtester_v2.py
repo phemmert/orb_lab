@@ -175,6 +175,13 @@ class Position:
     qqe_score: float = 0.0
     vol_score: float = 0.0
 
+    # Composite grade (computed at entry, carried to trade record)
+    composite_score: float = 0.0
+    composite_grade: str = "D"
+    grade_rr_score: float = 0.0
+    grade_conf_score: float = 0.0
+    grade_vol_score: float = 0.0
+
     # Exit state
     stop_moved_to_be: bool = False
     trailing_activated: bool = False
@@ -198,6 +205,11 @@ class Position:
         self.wae_score = 0.0
         self.qqe_score = 0.0
         self.vol_score = 0.0
+        self.composite_score = 0.0
+        self.composite_grade = "D"
+        self.grade_rr_score = 0.0
+        self.grade_conf_score = 0.0
+        self.grade_vol_score = 0.0
         self.stop_moved_to_be = False
         self.trailing_activated = False
         self.trailing_stop_level = np.nan
@@ -225,6 +237,12 @@ class TradeRecord:
     wae_score: float = 0.0
     qqe_score: float = 0.0
     vol_score: float = 0.0
+    # Composite grade
+    composite_score: float = 0.0
+    composite_grade: str = "D"
+    grade_rr_score: float = 0.0
+    grade_conf_score: float = 0.0
+    grade_vol_score: float = 0.0
 
 
 @dataclass
@@ -942,6 +960,11 @@ class HMMBacktesterV2:
             confluence_score=self.position.confluence_score,
             ssl_score=self.position.ssl_score, wae_score=self.position.wae_score,
             qqe_score=self.position.qqe_score, vol_score=self.position.vol_score,
+            composite_score=self.position.composite_score,
+            composite_grade=self.position.composite_grade,
+            grade_rr_score=self.position.grade_rr_score,
+            grade_conf_score=self.position.grade_conf_score,
+            grade_vol_score=self.position.grade_vol_score,
         )
         self.trades.append(trade)
 
@@ -949,10 +972,53 @@ class HMMBacktesterV2:
             tag = "WIN" if pnl > 0 else "LOSS"
             print(f"  [{tag}] {self.position.direction} {date_str} {self.position.entry_time}->{time_str}: "
                   f"${pnl:+.2f} ({r_multiple:+.2f}R) - {exit_reason} "
-                  f"[C:{self.position.confluence_score:.1f}]")
+                  f"[C:{self.position.confluence_score:.1f} G:{self.position.composite_grade} ({self.position.composite_score:.2f})]")
 
         self.position.reset()
         self.bars_since_last_entry = 0
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # COMPOSITE GRADING (label only — no filtering)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _compute_grade(self, achievable_rr: float, conf_score: float, atr: float, bar: pd.Series):
+        """Compute composite grade at entry. Stores on self.position."""
+        # R:R component (40%): linear 1.5→0.0, 3.0→1.0
+        rr_score = max(0.0, min(1.0, (achievable_rr - 1.5) / 1.0))
+
+        # Confluence component (40%): re-scale 3→0.0, 5→1.0
+        conf_norm = min(1.0, 0.5 + (conf_score - 3.0) * 0.25)
+
+        # Volatility component (20%): ATR / SMA50(ATR), linear 0.5→0.0, 1.5→1.0
+        atr_val = atr
+        atr_pct = bar.get('atr_pct', np.nan)
+        atr_pct_avg = bar.get('atr_pct_avg', np.nan)
+        if not pd.isna(atr_pct) and not pd.isna(atr_pct_avg) and atr_pct_avg > 0:
+            vol_ratio = atr_pct / atr_pct_avg
+        else:
+            vol_ratio = 1.0
+        vol_norm = max(0.0, min(1.0, (vol_ratio - 0.5) / 1.0))
+
+        # Weighted composite
+        composite = 0.40 * rr_score + 0.40 * conf_norm + 0.20 * vol_norm
+
+        # Letter grade
+        if composite >= 0.55:
+            grade = "A+"
+        elif composite >= 0.48:
+            grade = "A"
+        elif composite >= 0.40:
+            grade = "B"
+        elif composite >= 0.32:
+            grade = "C"
+        else:
+            grade = "D"
+
+        self.position.composite_score = composite
+        self.position.composite_grade = grade
+        self.position.grade_rr_score = rr_score
+        self.position.grade_conf_score = conf_norm
+        self.position.grade_vol_score = vol_norm
 
     # ═══════════════════════════════════════════════════════════════════════
     # ENTRY LOGIC
@@ -994,11 +1060,15 @@ class HMMBacktesterV2:
                 self.position.qqe_score = self.df['qqe_score_bear'].iloc[full_idx]
             self.position.vol_score = self.df['vol_score'].iloc[full_idx]
 
+            # Composite grade (label only — no filtering)
+            self._compute_grade(achievable_rr, conf_score, atr, bar)
+
             self.bars_since_last_entry = 0
 
             if self.verbose:
                 print(f"  [ENTRY] {direction} {time_str} @ ${entry:.2f} stop=${stop_price:.2f} ({stop_type}) "
-                      f"RR={achievable_rr:.2f} vol={self.vol.vol_state} conf={conf_score:.1f}")
+                      f"RR={achievable_rr:.2f} vol={self.vol.vol_state} conf={conf_score:.1f} "
+                      f"G:{self.position.composite_grade} ({self.position.composite_score:.2f})")
         else:
             skip = SkipRecord(
                 date=date_str, time=time_str, direction=direction,
@@ -1250,6 +1320,9 @@ class HMMBacktesterV2:
                     'exit_reason': t.exit_reason, 'stop_type': t.stop_type,
                     'vol_state': t.vol_state, 'pnl': t.pnl, 'r_multiple': t.r_multiple,
                     'confluence': t.confluence_score,
+                    'grade': t.composite_grade, 'grade_score': t.composite_score,
+                    'grade_rr': t.grade_rr_score, 'grade_conf': t.grade_conf_score,
+                    'grade_vol': t.grade_vol_score,
                 }
                 for t in self.trades
             ],
@@ -1293,7 +1366,7 @@ class HMMBacktesterV2:
                 print(f"{t['date']} {dir_str} {t['entry_time']}->{t['exit_time']}  "
                       f"${t['entry_price']:.2f}->${t['exit_price']:.2f}  "
                       f"{t['exit_reason']:<18} {t['r_multiple']:+.2f}R  "
-                      f"C:{t['confluence']:.1f}")
+                      f"C:{t['confluence']:.1f} G:{t['grade']} ({t['grade_score']:.2f})")
             print(f"\nTotal: {len(results['trades'])} trades, {results['total_r']:+.2f}R")
 
 
