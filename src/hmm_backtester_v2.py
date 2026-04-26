@@ -866,9 +866,28 @@ class HMMBacktesterV2:
                 self.position.trailing_stop_level = new_trail
             self.position.current_stop = min(self.position.trailing_stop_level, self.position.entry_price)
 
+    def _update_ema_counter(self, bar, ema):
+        """Update bars_beyond_ema counter every bar while in position.
+        Pine parity: counter runs unconditionally (not gated by BE/trailing).
+        Body % does NOT affect the counter — only gates the exit trigger."""
+        if not self._in_position():
+            return
+        close = bar['close']
+        if self.position.direction == "LONG":
+            if close < ema:
+                self.position.bars_beyond_ema += 1
+            else:
+                self.position.bars_beyond_ema = 0
+        else:
+            if close > ema:
+                self.position.bars_beyond_ema += 1
+            else:
+                self.position.bars_beyond_ema = 0
+
     def _check_ema_exit(self, bar, ema):
-        """EMA exit: after BE, not trailing, with confirmation bars + body %
-        No SSL breach gate (simplified — matches ORB pattern)."""
+        """EMA exit trigger (read-only on counter).
+        Gates: BE activated, not trailing, close in profit, confirmation bars, body %.
+        Counter is updated separately by _update_ema_counter."""
         if not self._in_position() or not self.use_ema_exit:
             return False
         if not self.position.stop_moved_to_be or self.position.trailing_activated:
@@ -876,44 +895,35 @@ class HMMBacktesterV2:
 
         close = bar['close']
         open_ = bar['open']
-        body_size = abs(close - open_)
 
         if self.position.direction == "LONG":
             if close <= self.position.entry_price:
                 return False
-            if close < ema:
-                # Pine: open > ema9 ? 0.0 : ... (short-circuit)
-                if open_ > ema:
-                    body_beyond = 0.0
-                elif body_size > 0:
-                    body_beyond = min(body_size, ema - close) / body_size * 100
-                else:
-                    body_beyond = 0.0
-                if body_beyond >= self.ema_body_percentage:
-                    self.position.bars_beyond_ema += 1
-                else:
-                    self.position.bars_beyond_ema = 0
+            # Body % check (Pine: open > ema9 ? 0.0 : ...)
+            if close >= ema:
+                return False
+            body_size = abs(close - open_)
+            if open_ > ema:
+                body_beyond = 0.0
+            elif body_size > 0:
+                body_beyond = min(body_size, ema - close) / body_size * 100
             else:
-                self.position.bars_beyond_ema = 0
+                body_beyond = 0.0
         else:
             if close >= self.position.entry_price:
                 return False
-            if close > ema:
-                # Pine: open < ema9 ? 0.0 : ...
-                if open_ < ema:
-                    body_beyond = 0.0
-                elif body_size > 0:
-                    body_beyond = min(body_size, close - ema) / body_size * 100
-                else:
-                    body_beyond = 0.0
-                if body_beyond >= self.ema_body_percentage:
-                    self.position.bars_beyond_ema += 1
-                else:
-                    self.position.bars_beyond_ema = 0
+            if close <= ema:
+                return False
+            body_size = abs(close - open_)
+            if open_ < ema:
+                body_beyond = 0.0
+            elif body_size > 0:
+                body_beyond = min(body_size, close - ema) / body_size * 100
             else:
-                self.position.bars_beyond_ema = 0
+                body_beyond = 0.0
 
-        return self.position.bars_beyond_ema >= self.ema_confirmation_bars
+        return (self.position.bars_beyond_ema >= self.ema_confirmation_bars
+                and body_beyond >= self.ema_body_percentage)
 
     def _close_position(self, exit_price, exit_reason, time_str, date_str):
         if self.position.direction == "LONG":
@@ -1077,7 +1087,9 @@ class HMMBacktesterV2:
                     self._activate_trailing(bar, atr)
                 if self.position.trailing_activated:
                     self._update_trailing_stop(bar, atr, ema)
-                # 4. EMA exit
+                # 4. EMA counter (Pine: runs every bar in position, ungated)
+                self._update_ema_counter(bar, ema)
+                # 5. EMA exit trigger (read-only on counter)
                 if self._check_ema_exit(bar, ema):
                     self._close_position(bar['close'], "EMA EXIT", time_str, date_str)
                     closed_this_bar = True
