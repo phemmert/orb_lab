@@ -43,12 +43,31 @@ borderline vol_z bars to score differently. Not fixable without
 switching data providers. Keeping Polygon — closer to live trading 
 tape.
 
-## Audit items deferred
-- #4: Entry fill Pine=next bar open, Python=next bar close. 
-  Small price deltas, not count impact.
-- #6/#7: barsUnderEma counter scope and body% reset in Python. 
-  Affects EMA exit timing, not entry count.
-- #8: EMA exit close > entryPrice gate. Very minor.
+## Audit items completed
+- #1: Pine market ETF preset corrected to QQQ
+- #2: Volume scoring binary flag added (Pine binary parity)
+- #3: Pine signal qualification scope fixed
+- #5: Cooldown comparison >= in both files
+- #4: Entry fill = next-bar-open in Python (matches Pine default)
+- #6/#7: barsBeyondEma counter runs every bar in-position; resets 
+  only on price re-crossing EMA, not on body% failure
+
+## Audit items deferred (very minor)
+- #8: EMA exit gate close > entryPrice. Pine has 
+  `breakEvenActivated OR close > entryPrice`; Python has 
+  `close > entryPrice`. In practice once BE activates, close is 
+  almost always > entry — rarely diverges.
+
+## Exit reason distribution (Feb 3-28 AMD)
+| Reason     | Pine | Python |
+|------------|------|--------|
+| BE STOP    | 47   | 46     |
+| STOP LOSS  | 38   | 42     |
+| EMA EXIT   | 10   | 13     |
+| TRAIL STOP | 11   | 8      |
+| EOD EXIT   | 7    | 9      |
+| **Total**  | 113  | 118    |
+Absolute deviation: 13 (down from 19 pre-audit-cleanup)
 
 ## Repo cleanup deferred
 - src/HHM.pine (original HHM Pine): uncommitted weeks-old changes, 
