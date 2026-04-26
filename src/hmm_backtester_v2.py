@@ -24,6 +24,7 @@ Usage:
     results = bt.run()
 """
 
+import math
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -175,6 +176,9 @@ class Position:
     qqe_score: float = 0.0
     vol_score: float = 0.0
 
+    # Position sizing
+    position_size: int = 0
+
     # Composite grade (computed at entry, carried to trade record)
     composite_score: float = 0.0
     composite_grade: str = "D"
@@ -205,6 +209,7 @@ class Position:
         self.wae_score = 0.0
         self.qqe_score = 0.0
         self.vol_score = 0.0
+        self.position_size = 0
         self.composite_score = 0.0
         self.composite_grade = "D"
         self.grade_rr_score = 0.0
@@ -237,6 +242,10 @@ class TradeRecord:
     wae_score: float = 0.0
     qqe_score: float = 0.0
     vol_score: float = 0.0
+    # Position sizing
+    position_size: int = 0
+    net_pnl_usd: float = 0.0
+    equity_after: float = 0.0
     # Composite grade
     composite_score: float = 0.0
     composite_grade: str = "D"
@@ -359,6 +368,12 @@ class HMMBacktesterV2:
         extreme_vol_threshold: float = 2.0,
 
         # ═══════════════════════════════════════════════════════════════
+        # POSITION SIZING
+        # ═══════════════════════════════════════════════════════════════
+        fixed_risk: float = 200.0,
+        initial_capital: float = 45000.0,
+
+        # ═══════════════════════════════════════════════════════════════
         # OUTPUT
         # ═══════════════════════════════════════════════════════════════
         verbose: bool = False,
@@ -442,6 +457,12 @@ class HMMBacktesterV2:
         self.low_vol_threshold = low_vol_threshold
         self.high_vol_threshold = high_vol_threshold
         self.extreme_vol_threshold = extreme_vol_threshold
+
+        # Position sizing
+        self.fixed_risk = fixed_risk
+        self.initial_capital = initial_capital
+        self.equity_balance = initial_capital
+        self.size_skips = 0  # trades skipped due to position_size == 0
 
         self.verbose = verbose
         self.bar_size = bar_size
@@ -945,10 +966,12 @@ class HMMBacktesterV2:
 
     def _close_position(self, exit_price, exit_reason, time_str, date_str):
         if self.position.direction == "LONG":
-            pnl = exit_price - self.position.entry_price
+            pnl_per_share = exit_price - self.position.entry_price
         else:
-            pnl = self.position.entry_price - exit_price
-        r_multiple = pnl / self.position.risk if self.position.risk > 0 else 0
+            pnl_per_share = self.position.entry_price - exit_price
+        r_multiple = pnl_per_share / self.position.risk if self.position.risk > 0 else 0
+        net_pnl_usd = pnl_per_share * self.position.position_size
+        self.equity_balance += net_pnl_usd
 
         trade = TradeRecord(
             date=date_str, direction=self.position.direction,
@@ -956,10 +979,13 @@ class HMMBacktesterV2:
             exit_price=exit_price, exit_time=time_str, exit_reason=exit_reason,
             initial_stop=self.position.initial_stop, stop_type=self.position.stop_type,
             vol_state=self.position.vol_state, risk=self.position.risk,
-            pnl=pnl, r_multiple=r_multiple,
+            pnl=pnl_per_share, r_multiple=r_multiple,
             confluence_score=self.position.confluence_score,
             ssl_score=self.position.ssl_score, wae_score=self.position.wae_score,
             qqe_score=self.position.qqe_score, vol_score=self.position.vol_score,
+            position_size=self.position.position_size,
+            net_pnl_usd=net_pnl_usd,
+            equity_after=self.equity_balance,
             composite_score=self.position.composite_score,
             composite_grade=self.position.composite_grade,
             grade_rr_score=self.position.grade_rr_score,
@@ -969,10 +995,11 @@ class HMMBacktesterV2:
         self.trades.append(trade)
 
         if self.verbose:
-            tag = "WIN" if pnl > 0 else "LOSS"
+            tag = "WIN" if pnl_per_share > 0 else "LOSS"
             print(f"  [{tag}] {self.position.direction} {date_str} {self.position.entry_time}->{time_str}: "
-                  f"${pnl:+.2f} ({r_multiple:+.2f}R) - {exit_reason} "
-                  f"[C:{self.position.confluence_score:.1f} G:{self.position.composite_grade} ({self.position.composite_score:.2f})]")
+                  f"${pnl_per_share:+.2f} ({r_multiple:+.2f}R) - {exit_reason} "
+                  f"[C:{self.position.confluence_score:.1f} G:{self.position.composite_grade} ({self.position.composite_score:.2f})] "
+                  f"size={self.position.position_size} pnl=${net_pnl_usd:+.2f}")
 
         self.position.reset()
         self.bars_since_last_entry = 0
@@ -1037,6 +1064,16 @@ class HMMBacktesterV2:
 
         if achievable_rr >= self.min_acceptable_rr - 0.0001:
             risk = abs(entry - stop_price)
+
+            # Position sizing: whole shares, skip if zero
+            pos_size = math.floor(self.fixed_risk / risk) if risk > 0 else 0
+            if pos_size == 0:
+                self.size_skips += 1
+                if self.verbose:
+                    print(f"  [SIZE SKIP] {direction} {time_str} @ ${entry:.2f}: "
+                          f"risk/sh=${risk:.2f} > fixed_risk=${self.fixed_risk:.0f}")
+                return
+
             self.position.direction = direction
             self.position.entry_price = entry
             self.position.entry_time = time_str
@@ -1049,6 +1086,7 @@ class HMMBacktesterV2:
             self.position.target_rr = achievable_rr
             self.position.vol_state = self.vol.vol_state
             self.position.confluence_score = conf_score
+            self.position.position_size = pos_size
 
             if is_long:
                 self.position.ssl_score = self.df['ssl_score_bull'].iloc[full_idx]
@@ -1068,7 +1106,8 @@ class HMMBacktesterV2:
             if self.verbose:
                 print(f"  [ENTRY] {direction} {time_str} @ ${entry:.2f} stop=${stop_price:.2f} ({stop_type}) "
                       f"RR={achievable_rr:.2f} vol={self.vol.vol_state} conf={conf_score:.1f} "
-                      f"G:{self.position.composite_grade} ({self.position.composite_score:.2f})")
+                      f"G:{self.position.composite_grade} ({self.position.composite_score:.2f}) "
+                      f"size={pos_size}")
         else:
             skip = SkipRecord(
                 date=date_str, time=time_str, direction=direction,
@@ -1299,9 +1338,13 @@ class HMMBacktesterV2:
             peak_r = max(peak_r, cumulative_r)
             max_dd_r = max(max_dd_r, peak_r - cumulative_r)
 
+        total_net_pnl = sum(t.net_pnl_usd for t in self.trades)
+        avg_pos_size = sum(t.position_size for t in self.trades) / len(self.trades) if self.trades else 0
+
         return {
             'symbol': self.symbol, 'start_date': self.start_date, 'end_date': self.end_date,
             'total_trades': len(self.trades), 'total_skips': len(self.skips),
+            'size_skips': self.size_skips,
             'wins': len(wins), 'losses': len(losses), 'breakevens': len(breakevens),
             'win_rate': len(wins) / (len(wins) + len(losses)) * 100 if (len(wins) + len(losses)) > 0 else 0,
             'total_pnl': total_pnl, 'total_r': total_r,
@@ -1312,6 +1355,11 @@ class HMMBacktesterV2:
             'profit_factor': gross_profit / gross_loss if gross_loss > 0 else float('inf'),
             'max_drawdown_r': max_dd_r,
             'avg_r_per_trade': total_r / len(self.trades) if self.trades else 0,
+            'initial_capital': self.initial_capital,
+            'ending_capital': self.equity_balance,
+            'net_pnl_usd': total_net_pnl,
+            'net_return_pct': (self.equity_balance - self.initial_capital) / self.initial_capital * 100,
+            'avg_position_size': avg_pos_size,
             'trades': [
                 {
                     'date': t.date, 'direction': t.direction,
@@ -1320,6 +1368,8 @@ class HMMBacktesterV2:
                     'exit_reason': t.exit_reason, 'stop_type': t.stop_type,
                     'vol_state': t.vol_state, 'pnl': t.pnl, 'r_multiple': t.r_multiple,
                     'confluence': t.confluence_score,
+                    'position_size': t.position_size, 'net_pnl_usd': t.net_pnl_usd,
+                    'equity_after': t.equity_after,
                     'grade': t.composite_grade, 'grade_score': t.composite_score,
                     'grade_rr': t.grade_rr_score, 'grade_conf': t.grade_conf_score,
                     'grade_vol': t.grade_vol_score,
@@ -1344,13 +1394,18 @@ class HMMBacktesterV2:
 
         print(f"  Total Trades:    {results['total_trades']}")
         print(f"  Total Skips:     {results.get('total_skips', 0)}")
+        print(f"  Size Skips:      {results.get('size_skips', 0)}")
         print(f"  Wins/Losses/BE:  {results['wins']}W / {results['losses']}L / {results.get('breakevens', 0)}BE")
         print(f"  Win Rate:        {results['win_rate']:.1f}%")
         print(f"")
-        print(f"  Total P/L:       ${results['total_pnl']:+.2f}")
+        print(f"  Starting Cap:    ${results['initial_capital']:,.2f}")
+        print(f"  Ending Cap:      ${results['ending_capital']:,.2f}")
+        print(f"  Net P/L ($):     ${results['net_pnl_usd']:+,.2f}")
+        print(f"  Net Return:      {results['net_return_pct']:+.2f}%")
+        print(f"  Avg Pos Size:    {results['avg_position_size']:.1f} shares")
+        print(f"")
         print(f"  Total R:         {results['total_r']:+.2f}R")
         print(f"  Avg R/Trade:     {results['avg_r_per_trade']:+.3f}R")
-        print(f"")
         print(f"  Avg Win:         ${results['avg_win']:.2f} ({results.get('avg_win_r', 0):.2f}R)")
         print(f"  Avg Loss:        ${results['avg_loss']:.2f} ({results.get('avg_loss_r', 0):.2f}R)")
         print(f"  Profit Factor:   {results['profit_factor']:.2f}")
@@ -1366,7 +1421,8 @@ class HMMBacktesterV2:
                 print(f"{t['date']} {dir_str} {t['entry_time']}->{t['exit_time']}  "
                       f"${t['entry_price']:.2f}->${t['exit_price']:.2f}  "
                       f"{t['exit_reason']:<18} {t['r_multiple']:+.2f}R  "
-                      f"C:{t['confluence']:.1f} G:{t['grade']} ({t['grade_score']:.2f})")
+                      f"C:{t['confluence']:.1f} G:{t['grade']} ({t['grade_score']:.2f}) "
+                      f"size={t['position_size']:4d} pnl=${t['net_pnl_usd']:+8.2f}")
             print(f"\nTotal: {len(results['trades'])} trades, {results['total_r']:+.2f}R")
 
 

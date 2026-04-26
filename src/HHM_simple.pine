@@ -6,7 +6,7 @@
 strategy("HHM Simple", overlay=true, max_bars_back=500,
          process_orders_on_close=false,
          default_qty_type=strategy.fixed, default_qty_value=1,
-         initial_capital=100000, commission_value=0)
+         initial_capital=45000, commission_value=0)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // INPUTS
@@ -662,14 +662,15 @@ if newLongSignal and baseOK and canEnter and barstate.isconfirmed
         initialStopPrice := candStop
         breakEvenPrice := beTarget
         entryBar := bar_index
-        positionSize := riskPerShare > 0 ? fixedRisk / riskPerShare : 0
+        positionSize := riskPerShare > 0 ? math.floor(fixedRisk / riskPerShare) : 0
         breakEvenActivated := false
         trailingStopActivated := false
         trailingStopLevel := na
         barsUnderEma := 0
         barsOverEma := 0
 
-        strategy.entry("Long", strategy.long)
+        if positionSize > 0
+            strategy.entry("Long", strategy.long, qty=positionSize)
 
 if newShortSignal and baseOK and canEnter and barstate.isconfirmed and not inLongPosition
     [candStop, candRR] = evaluateBestStop(false, close, atr, vwapValue)
@@ -684,14 +685,15 @@ if newShortSignal and baseOK and canEnter and barstate.isconfirmed and not inLon
         initialStopPrice := candStop
         breakEvenPrice := beTarget
         entryBar := bar_index
-        positionSize := riskPerShare > 0 ? fixedRisk / riskPerShare : 0
+        positionSize := riskPerShare > 0 ? math.floor(fixedRisk / riskPerShare) : 0
         breakEvenActivated := false
         trailingStopActivated := false
         trailingStopLevel := na
         barsUnderEma := 0
         barsOverEma := 0
 
-        strategy.entry("Short", strategy.short)
+        if positionSize > 0
+            strategy.entry("Short", strategy.short, qty=positionSize)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXIT CASCADE: stop → BE → trailing → EMA → EOD
