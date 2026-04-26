@@ -103,3 +103,57 @@ which one caused it.
 ## Bootstrap for new chat
 "Read C:\Users\phemm\orb_lab\STATE.md — resuming HHM Simple 
 validation." Then upload the file.
+
+## Recent commits
+- 469e349: Audit #4 - entry fill = next-bar-open
+- 985262d: Audit #6/#7 - barsBeyondEma counter scope/reset
+- 10203a6: Composite grading (label-only) - R:R 40% / conf 40% / vol 20%
+- (latest):  Fixed-risk position sizing ($200/trade, $45K initial capital)
+
+## Position sizing (validated)
+- Pine and Python both use math.floor(fixed_risk / risk_per_share)
+- Pine: strategy.entry(qty=positionSize), initial_capital=45000
+- Python: position_size on Position/TradeRecord, equity_balance tracked
+- Default: $200 fixed risk per trade, no position cap, whole shares only
+- Trades where risk_per_share > $200 are skipped (Python tracks via size_skips)
+
+## Feb 3-28 2026 AMD baseline (post-sizing)
+| Metric            | Pine        | Python       |
+|-------------------|-------------|--------------|
+| Trade count       | 113         | 118 (+5)     |
+| Net P&L           | -$2,613.74  | -$2,148.00   |
+| Wins / BE / Loss  | n/a *       | 28 / 46 / 44 |
+| Mean position     | 279         | 295          |
+
+* Pine has zero exact-$0.00 trades because its strategy engine 
+  simulates realistic intrabar stop fills with bar-granularity 
+  noise (small ± P&L on BE-stopped trades). Python uses idealized 
+  fills (BE stop = exactly $0.00).
+
+## Architectural decision: Python uses idealized BE fills
+Python's BE-stopped trades exit at exactly entry_price ($0.00 P&L). 
+Pine's "realistic" BE noise is actually bar-granularity artifact, 
+not real slippage. For strategy optimization (turning knobs to find 
+better parameters), idealized fills give cleaner signal — knob 
+changes only move P&L when they actually change strategy behavior, 
+not when they happen to land on different "noisy" BE bars.
+
+Real execution friction (slippage, commission, spread) would be 
+added as a uniform layer at the end of optimization, not modeled 
+ad-hoc per exit type.
+
+## Composite grading (label-only)
+| Grade | % of trades |
+|-------|-------------|
+| A+    | ~1%         |
+| A     | ~15%        |
+| B     | ~26%        |
+| C     | ~24%        |
+| D     | ~34%        |
+
+Components: R:R 40% (mapped 1.5→0.0, 2.5→1.0), confluence 40% 
+(0.5 base for qualifying + 0.25 per +1 score), volatility 20% 
+(ATR percentile 50-bar). Thresholds: A+ ≥ 0.55, A 0.48-0.55, 
+B 0.40-0.48, C 0.32-0.40, D < 0.32.
+
+Grades are descriptive only — no filtering applied.
