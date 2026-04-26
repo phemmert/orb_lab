@@ -1052,7 +1052,7 @@ class HMMBacktesterV2:
                 self._try_enter(bar, day_df, i, pending_direction,
                                pending_conf_score, pending_full_idx,
                                date_str, time_str, atr,
-                               entry_price=bar['close'])
+                               entry_price=bar['open'])
                 pending_direction = None
 
             # ═══════════════════════════════════════════════════════════
